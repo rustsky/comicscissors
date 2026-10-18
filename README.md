@@ -40,7 +40,7 @@ the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to
 of the output type (a PDF comic repacked to PDF), the result is saved as the data file
 `data/Title - Author_repanel.pdf` instead, shown under *Data files* in Book details. Repacking
 again replaces only the earlier result.
-Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the language, manga mode, full-page overviews and extra CLI flags.
+Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the image quality, the language, manga mode, full-page overviews and extra CLI flags.
 
 PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
 Calibre, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
@@ -123,6 +123,7 @@ Each page is exactly the size of the screen.
 | Panels merged together | `--split-coverage 0.5`, `--threshold 30` |
 | Panels split too much | `--split-coverage 0.2` |
 | Washed-out e-ink | `--gamma 1.4` |
+| File too big | `-q 70` (JPEG quality, default 88), `--max-upscale 1.3` |
 | Dictionary lookup missing words | check `--lang`; copy the PDF over USB (Send to Kindle can drop the text layer) |
 | Neighbouring panels cut into an L-shaped panel | `--rect-crop` |
 | Check detection | `--debug-dir dbg/` writes each page with the detected panel outlines, numbered in reading order (`3?` = still doubtful), plus `report.txt` with each panel's confidence and the reasons |

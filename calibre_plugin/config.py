@@ -66,6 +66,13 @@ class ConfigWidget(QWidget):
         self.format.setCurrentIndex(max(0, self.format.findData(prefs['format'])))
         form.addRow('Output format:', self.format)
 
+        self.quality = QSpinBox(self)
+        self.quality.setRange(30, 100)
+        self.quality.setValue(prefs['quality'])
+        self.quality.setToolTip('JPEG quality of the pages. Lower makes much smaller files;\n'
+                                'e-ink shows little difference down to about 70.')
+        form.addRow('Image quality:', self.quality)
+
         self.ocr = QCheckBox('Add text layer for dictionary lookup (PDF only, needs Tesseract)', self)
         self.ocr.setChecked(prefs['ocr'])
         form.addRow(self.ocr)
@@ -112,6 +119,7 @@ class ConfigWidget(QWidget):
         prefs['custom_ppi'] = self.screen_ppi.value()
         prefs['custom_color'] = self.screen_color.isChecked()
         prefs['format'] = self.format.currentData()
+        prefs['quality'] = self.quality.value()
         prefs['ocr'] = self.ocr.isChecked()
         prefs['lang'] = self.lang.text().strip() or 'en'
         prefs['rtl'] = self.rtl.isChecked()

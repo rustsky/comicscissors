@@ -21,6 +21,7 @@ prefs.defaults['ocr'] = True
 prefs.defaults['rtl'] = False
 prefs.defaults['rect_crop'] = False
 prefs.defaults['overview'] = False
+prefs.defaults['quality'] = 88
 prefs.defaults['custom_width'] = 1264
 prefs.defaults['custom_height'] = 1680
 prefs.defaults['custom_ppi'] = 300

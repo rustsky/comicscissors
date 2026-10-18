@@ -116,8 +116,9 @@ struct Args {
     #[arg(long, default_value_t = 1.0)]
     gamma: f32,
 
-    /// JPEG quality of output pages.
-    #[arg(long, default_value_t = 88, value_parser = clap::value_parser!(u8).range(30..=100))]
+    /// JPEG quality of output pages (30-100). Lower makes much smaller files; e-ink shows little
+    /// difference down to about 70.
+    #[arg(short, long, default_value_t = 88, value_parser = clap::value_parser!(u8).range(30..=100))]
     quality: u8,
 
     /// Ink detection threshold (luma difference from the paper colour).
