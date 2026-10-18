@@ -84,11 +84,28 @@ pub fn resolve(code: &str) -> Result<(String, String)> {
     let missing: Vec<&str> = tess.split('+').filter(|l| !installed.contains(l)).collect();
     if !missing.is_empty() {
         bail!(
-            "Tesseract has no data for {name} ({}); install it with `brew install tesseract-lang`",
-            missing.join(", ")
+            "Tesseract has no data for {name} ({m}). Install all languages with \
+             `brew install tesseract-lang`, or just this one with:\n  \
+             curl -L -o \"$(brew --prefix)/share/tessdata/{m}.traineddata\" \
+             https://github.com/tesseract-ocr/tessdata_fast/raw/main/{m}.traineddata",
+            m = missing.join(", ")
         );
     }
     Ok((tess, name))
+}
+
+/// Language tag for the PDF (`en`, `fa`, `zh-TW`, ...) from what the user typed.
+pub fn bcp47(code: &str) -> String {
+    let code = code.trim().to_ascii_lowercase();
+    let iso = LANGUAGES
+        .iter()
+        .find(|(iso, tess, name)| *iso == code || *tess == code || name.to_ascii_lowercase() == code)
+        .map(|(iso, _, _)| iso.to_string())
+        .unwrap_or(code);
+    match iso.split_once('-') {
+        Some((a, b)) => format!("{a}-{}", b.to_ascii_uppercase()),
+        None => iso,
+    }
 }
 
 /// Ask which language the comic is in. Empty answer = English.

@@ -81,7 +81,7 @@ pub fn render_page(
 
 /// Minimal PDF: one full-bleed JPEG per page, page size matching the screen at its ppi.
 /// `texts[i]` is an optional invisible text layer for page `i` (empty = none), which
-/// makes words selectable for the Kindle dictionary.
+/// makes words selectable for the Kindle dictionary. `lang` is a BCP 47 language tag.
 pub fn write_pdf(
     path: &Path,
     pages: &[Vec<u8>],
@@ -89,6 +89,7 @@ pub fn write_pdf(
     o: &RenderOptions,
     ppi: u32,
     title: &str,
+    lang: Option<&str>,
 ) -> Result<()> {
     let mut w = Counter { inner: BufWriter::new(fs::File::create(path)?), pos: 0 };
     let mut offsets: Vec<u64> = Vec::new();
@@ -105,12 +106,14 @@ pub fn write_pdf(
 
     w.write_all(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")?;
     offsets.push(w.pos);
-    write!(w, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")?;
+    // The document language tells readers which dictionary to use for lookups.
+    let lang = lang.map(|l| format!(" /Lang ({})", pdf_escape(l))).unwrap_or_default();
+    write!(w, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R{lang} >>\nendobj\n")?;
     offsets.push(w.pos);
     let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", page_id(i))).collect();
     write!(w, "2 0 obj\n<< /Type /Pages /Count {n} /Kids [{}] >>\nendobj\n", kids.join(" "))?;
     offsets.push(w.pos);
-    write!(w, "3 0 obj\n<< /Title ({}) /Producer (comic-magic) >>\nendobj\n", pdf_escape(title))?;
+    write!(w, "3 0 obj\n<< /Title ({}) /Producer (comic-scissors) >>\nendobj\n", pdf_escape(title))?;
 
     for (i, jpeg) in pages.iter().enumerate() {
         let id = page_id(i);
@@ -210,12 +213,23 @@ fn write_glyphless_font<W: Write>(w: &mut Counter<W>, offsets: &mut Vec<u64>, id
     w.write_all(TTF)?;
     w.write_all(b"\nendstream\nendobj\n")?;
 
-    let cmap = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
-        /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
-        /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
-        1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n\
-        1 beginbfrange\n<0000> <FFFF> <0000>\nendbfrange\n\
-        endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend";
+    // Identity mapping from codes to Unicode. A bfrange may only vary its last byte,
+    // so the 65536 codes are written as 256 ranges, at most 100 per block (PDF spec).
+    let mut cmap = String::from(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+    );
+    let hi_bytes: Vec<u32> = (0..256).filter(|h| !(0xD8..0xE0).contains(h)).collect(); // skip surrogates
+    for block in hi_bytes.chunks(100) {
+        cmap.push_str(&format!("{} beginbfrange\n", block.len()));
+        for h in block {
+            cmap.push_str(&format!("<{h:02X}00> <{h:02X}FF> <{h:02X}00>\n"));
+        }
+        cmap.push_str("endbfrange\n");
+    }
+    cmap.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend");
     offsets.push(w.pos);
     write!(w, "{to_unicode} 0 obj\n<< /Length {} >>\nstream\n{cmap}\nendstream\nendobj\n", cmap.len())?;
 
@@ -264,6 +278,8 @@ pub fn write_cbz(path: &Path, pages: &[Vec<u8>]) -> Result<()> {
         zip.start_file(format!("{:05}.jpg", i + 1), opts)?;
         zip.write_all(jpeg)?;
     }
+    // Lets front ends (the Calibre plugin) tell our output from an original comic.
+    zip.set_comment("comic-scissors")?;
     zip.finish()?;
     Ok(())
 }
@@ -274,4 +290,37 @@ pub fn write_images(dir: &Path, pages: &[Vec<u8>]) -> Result<()> {
         fs::write(dir.join(format!("{:05}.jpg", i + 1)), jpeg)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Non-ASCII words (German letters, curly quotes) go into the text layer intact.
+    #[test]
+    fn writes_unicode_text_layer() {
+        let o = RenderOptions { width: 200, height: 100, color: false, gamma: 1.0, quality: 80 };
+        let mut jpeg = Vec::new();
+        let img = image::GrayImage::from_pixel(200, 100, image::Luma([255]));
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode_image(&img).unwrap();
+        let words: Vec<PlacedWord> = ["Größe", "Straße", "geht’s", "„Hallo“"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| PlacedWord {
+                x: 10.0,
+                y: 20.0 + 20.0 * i as f32,
+                advance: 80.0,
+                size: 15.0,
+                down: false,
+                text: t.to_string(),
+            })
+            .collect();
+        let path = std::env::temp_dir().join("comic-scissors-unicode-test.pdf");
+        write_pdf(&path, &[jpeg], &[words], &o, 300, "t", Some("de")).unwrap();
+        let pdf = fs::read(&path).unwrap();
+        let has = |s: &[u8]| pdf.windows(s.len()).any(|w| w == s);
+        assert!(has(b"/Lang (de)"));
+        assert!(has(b"<0047007200F600DF0065>"), "Größe as UTF-16 code units");
+        assert!(has(b"<2000> <20FF> <2000>"), "range covering curly quotes");
+    }
 }

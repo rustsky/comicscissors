@@ -1,0 +1,102 @@
+# Push a tag matching Cargo.toml's version (e.g. v0.1.0) to build and publish a release.
+# Each platform gets one archive with the CLI and the Calibre plugin (which bundles the same binary).
+# Run it by hand (workflow_dispatch) to only build the archives as workflow artifacts.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest available Ubuntu, so the binary runs on distros with an older glibc.
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            targets: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            platform: macos-universal
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: windows-latest
+            platform: windows-x86_64
+            targets: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $v"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build
+        shell: bash
+        run: |
+          for t in ${TARGETS//,/ }; do
+            cargo build --release --locked --target "$t"
+          done
+        env:
+          TARGETS: ${{ matrix.targets }}
+
+      - name: Universal binary
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p target/universal
+          lipo -create -output target/universal/comic-scissors \
+            target/aarch64-apple-darwin/release/comic-scissors \
+            target/x86_64-apple-darwin/release/comic-scissors
+          # Ad-hoc signature: Apple Silicon refuses to run unsigned binaries.
+          codesign --force --sign - target/universal/comic-scissors
+
+      - name: Package
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS)   bin=target/universal/comic-scissors ;;
+            Windows) bin=target/$TARGETS/release/comic-scissors.exe ;;
+            *)       bin=target/$TARGETS/release/comic-scissors ;;
+          esac
+          "$bin" --list-devices
+          python scripts/package.py --binary "$bin" --platform "$PLATFORM"
+        env:
+          TARGETS: ${{ matrix.targets }}
+          PLATFORM: ${{ matrix.platform }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
