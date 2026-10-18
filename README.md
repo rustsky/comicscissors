@@ -20,11 +20,38 @@ CBR/CB7 input uses `bsdtar` (built into macOS), `unar` or `7z`.
 The dictionary text layer needs Tesseract (`brew install tesseract`). English is included; for
 other languages, run `brew install tesseract-lang`.
 
+## Calibre plugin
+
+Each [release](https://github.com/rustsky/comic_magic/releases) has one archive per platform
+(`linux-x86_64`, `macos-universal`, `windows-x86_64`) that holds the `comic-magic` CLI and
+`comic-magic-calibre-plugin.zip`. The plugin includes the same binary.
+
+Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for Kindle**
+button to a toolbar. Select comics (CBZ, CBR, CB7 or PDF) and click it. The result is added to
+the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to the Kindle with
+*Send to device*. An original file is never replaced: when the book already has an original file
+of the output type (a PDF comic repacked to PDF), the result is saved as the data file
+`data/Title - Author_repanel.pdf` instead, shown under *Data files* in Book details. Repacking
+again replaces only the earlier result.
+Use the button's menu → *Settings* to choose the Kindle, the output format, the language, manga mode and extra CLI flags.
+
+PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
+Calibre, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
+the plugin converts without the text layer.
+
+Releases: bump `version` in `Cargo.toml`, commit, then `git tag v<version> && git push --tags`.
+CI builds the three archives and publishes the release. To build an archive locally:
+
+```sh
+cargo build --release
+python3 scripts/package.py --binary target/release/comic-magic --platform macos-arm64   # -> dist/
+```
+
 ## Use
 
 ```sh
 comic-magic mycomic.cbz                       # asks which Kindle you have and the comic's language
-comic-magic mycomic.pdf -d paperwhite-5       # -> mycomic_paperwhite-5.pdf
+comic-magic mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
 comic-magic pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
 comic-magic manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
 comic-magic bd.cbz -d paperwhite-5 --lang fr       # French text layer

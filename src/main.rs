@@ -31,7 +31,7 @@ struct Args {
     /// Comic to convert: .pdf, .cbz/.zip, .cbr/.cb7, an image, or a folder of images.
     input: Option<PathBuf>,
 
-    /// Output path (default: <input>_<device>.<ext>).
+    /// Output path (default: <input>_repanel.<ext>, next to the input).
     #[arg(short, long)]
     output: Option<PathBuf>,
 
@@ -136,6 +136,10 @@ struct Args {
     /// Write each source page with the detected panels outlined into this folder.
     #[arg(long)]
     debug_dir: Option<PathBuf>,
+
+    /// Print progress as `@@progress <stage>|<pos>|<len>` lines on stdout (for front ends).
+    #[arg(long, hide = true)]
+    progress_lines: bool,
 }
 
 fn main() {
@@ -147,6 +151,9 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = Args::parse();
+    if args.progress_lines {
+        progress::enable_lines();
+    }
     if args.list_devices {
         devices::print_list();
         return Ok(());
@@ -369,7 +376,7 @@ fn run() -> Result<()> {
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
 
-    let out_path = args.output.clone().unwrap_or_else(|| default_output(&input, &device.id, args.format));
+    let out_path = args.output.clone().unwrap_or_else(|| default_output(&input, args.format));
     let title = input.file_stem().and_then(|s| s.to_str()).unwrap_or("comic");
     let pb = progress::spinner("Writing", &out_path.display().to_string());
     match args.format {
@@ -416,12 +423,12 @@ fn report(pages: &[(&PathBuf, &Vec<detect::Panel>)]) -> String {
     out
 }
 
-fn default_output(input: &Path, device: &str, format: Format) -> PathBuf {
+fn default_output(input: &Path, format: Format) -> PathBuf {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("comic");
     let name = match format {
-        Format::Pdf => format!("{stem}_{device}.pdf"),
-        Format::Cbz => format!("{stem}_{device}.cbz"),
-        Format::Images => format!("{stem}_{device}"),
+        Format::Pdf => format!("{stem}_repanel.pdf"),
+        Format::Cbz => format!("{stem}_repanel.cbz"),
+        Format::Images => format!("{stem}_repanel"),
     };
     input.parent().unwrap_or(Path::new(".")).join(name)
 }

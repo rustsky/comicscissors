@@ -278,6 +278,8 @@ pub fn write_cbz(path: &Path, pages: &[Vec<u8>]) -> Result<()> {
         zip.start_file(format!("{:05}.jpg", i + 1), opts)?;
         zip.write_all(jpeg)?;
     }
+    // Lets front ends (the Calibre plugin) tell our output from an original comic.
+    zip.set_comment("comic-magic")?;
     zip.finish()?;
     Ok(())
 }
