@@ -5,7 +5,8 @@
 Read comics and manga on a Kindle or any other e-reader panel by panel, without zooming.
 ComicScissors detects the panels on each page of a PDF, CBZ, CBR or CB7, cuts them out and
 repacks them onto pages sized for your device: Kindle, Kobo, PocketBook, Boox, Tolino,
-reMarkable and Nook models are built in, and any other screen size works too.
+reMarkable and Nook models are built in, and any other screen size works too. The result is a
+PDF, EPUB, KEPUB, AZW3 or CBZ.
 It runs as a command line tool on macOS, Windows and Linux, or as a Calibre plugin.
 
 ![A comic page with five detected panels, repacked onto three Kindle Paperwhite pages](docs/demo.jpg)
@@ -43,7 +44,7 @@ again replaces only the earlier result.
 Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the image quality, the language, manga mode, full-page overviews and extra CLI flags.
 
 PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
-Calibre, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
+Calibre, and AZW3 is made with Calibre's own `ebook-convert`, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
 the plugin converts without the text layer.
 
 Releases: bump `version` in `Cargo.toml`, commit, then `git tag v<version> && git push --tags`.
@@ -61,6 +62,8 @@ python3 scripts/package.py --binary target/release/comic-scissors --platform mac
 comic-scissors mycomic.cbz                       # asks which e-reader you have and the comic's language
 comic-scissors mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
 comic-scissors pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
+comic-scissors mycomic.cbz -d kobo-libra-colour -f kepub   # -> mycomic_repanel.kepub.epub
+comic-scissors mycomic.cbz -d paperwhite-5 -f azw3        # Kindle book (needs calibre)
 comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
 comic-scissors mycomic.cbz -d kindle-11 --overview  # each full page, then its panels
 comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
@@ -69,8 +72,20 @@ comic-scissors --list-devices
 comic-scissors in.cbz --width 1072 --height 1448 --ppi 300   # custom screen
 ```
 
-Copy the output PDF to the e-reader over USB (on a Kindle, into its `documents` folder).
+Copy the output to the e-reader over USB (on a Kindle, into its `documents` folder).
 Each page is exactly the size of the screen.
+
+| Format | Best for |
+|---|---|
+| `pdf` (default) | every e-reader; the only format with the dictionary text layer |
+| `epub` | Kobo, PocketBook, Tolino, Boox, Apple Books; Send to Kindle turns it into a Kindle book |
+| `kepub` | Kobo (faster page turns than EPUB) |
+| `azw3` | Kindle over USB: shown full screen as a comic, with cover and reading progress |
+| `cbz` | comic reader apps (KOReader, Panels, ...) |
+
+EPUB and KEPUB are fixed-layout EPUB 3 (one image per page, right-to-left page turns with
+`--rtl`). AZW3 is converted from that EPUB with calibre's `ebook-convert`, which must be
+installed (it is found on PATH or in calibre's default install folder).
 
 ## How it works
 
@@ -110,8 +125,8 @@ Each page is exactly the size of the screen.
    across lines are joined, so lookups find dictionary entries. The language is set with
    `--lang` (default `en`), and `--no-ocr` turns this off. OCR adds about 1 s per page per
    CPU core. Sound effects and stylised lettering are mostly not recognised.
-5. **Output**: grayscale JPEG pages (colour on Colorsoft or with `--color`), saved as PDF, CBZ or
-   an image folder.
+5. **Output**: grayscale JPEG pages (colour on Colorsoft or with `--color`), saved as PDF, EPUB,
+   KEPUB, AZW3, CBZ or an image folder.
 
 ## Tuning
 

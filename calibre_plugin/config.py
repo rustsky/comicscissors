@@ -62,6 +62,9 @@ class ConfigWidget(QWidget):
 
         self.format = QComboBox(self)
         self.format.addItem('PDF (works on every e-reader)', 'pdf')
+        self.format.addItem('EPUB (Kobo, PocketBook, Tolino, Boox; Send to Kindle)', 'epub')
+        self.format.addItem('KEPUB (Kobo)', 'kepub')
+        self.format.addItem('AZW3 (Kindle over USB)', 'azw3')
         self.format.addItem('CBZ', 'cbz')
         self.format.setCurrentIndex(max(0, self.format.findData(prefs['format'])))
         form.addRow('Output format:', self.format)

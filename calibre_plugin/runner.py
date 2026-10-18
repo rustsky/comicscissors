@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -12,6 +13,8 @@ from calibre.constants import ismacos, iswindows
 from calibre.utils.config import JSONConfig, config_dir
 
 EXE = 'comic-scissors.exe' if iswindows else 'comic-scissors'
+# File extension of each output format.
+EXTENSIONS = {'pdf': 'pdf', 'cbz': 'cbz', 'epub': 'epub', 'kepub': 'kepub.epub', 'azw3': 'azw3'}
 
 prefs = JSONConfig('plugins/comic_scissors')
 prefs.defaults['device'] = 'paperwhite-5'
@@ -75,12 +78,16 @@ def bundled_binary():
 
 
 def made_by_us(path, fmt):
-    """True for a PDF or CBZ written by comic-scissors (an earlier repack), False for an original."""
+    """True for a file written by comic-scissors (an earlier repack), False for an original."""
     try:
         if fmt == 'PDF':
             with open(path, 'rb') as f:
                 return b'/Producer (comic-scissors)' in f.read(1 << 16)
-        if fmt == 'CBZ':
+        if fmt == 'AZW3':
+            # The book producer in the EXTH header, near the start of the file.
+            with open(path, 'rb') as f:
+                return b'comic-scissors' in f.read(1 << 16)
+        if fmt in ('CBZ', 'EPUB', 'KEPUB'):
             with zipfile.ZipFile(path) as z:
                 return z.comment == b'comic-scissors'
     except (OSError, TypeError, zipfile.BadZipFile):
@@ -101,9 +108,10 @@ def find_binary():
 
 
 def tool_env():
-    """PATH with calibre's bundled Poppler (pdftoppm, pdfinfo) and the usual Tesseract locations."""
+    """PATH with calibre's own tools (ebook-convert, for AZW3), its bundled Poppler (pdftoppm,
+    pdfinfo) and the usual Tesseract locations."""
     env = dict(os.environ)
-    dirs = []
+    dirs = [getattr(sys, 'executables_location', '')]
     try:
         from calibre.ebooks.metadata.pdf import get_tools
         dirs.append(os.path.dirname(get_tools()[1]))

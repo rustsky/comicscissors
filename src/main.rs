@@ -1,5 +1,6 @@
 mod detect;
 mod devices;
+mod epub;
 mod input;
 mod layout;
 mod ocr;
@@ -20,6 +21,12 @@ enum Format {
     Pdf,
     /// Comic book zip of JPEG pages (KOReader, Kindle Comic Converter, etc.).
     Cbz,
+    /// Fixed-layout EPUB (Kobo, PocketBook, Tolino, Boox, Apple Books; Send to Kindle).
+    Epub,
+    /// Fixed-layout EPUB saved as .kepub.epub for Kobo's faster reader.
+    Kepub,
+    /// Kindle book (KF8), converted from the EPUB with calibre's ebook-convert.
+    Azw3,
     /// A folder of JPEG pages.
     Images,
 }
@@ -393,6 +400,15 @@ fn run() -> Result<()> {
             output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, title, tag.as_deref())?
         }
         Format::Cbz => output::write_cbz(&out_path, &rendered)?,
+        Format::Epub | Format::Kepub | Format::Azw3 => {
+            let tag = ocr::bcp47(&lang);
+            let book = epub::Book { title, lang: &tag, width: device.width, height: device.height, rtl: args.rtl };
+            if args.format == Format::Azw3 {
+                epub::write_azw3(&out_path, &rendered, &book)?
+            } else {
+                epub::write_epub(&out_path, &rendered, &book)?
+            }
+        }
         Format::Images => output::write_images(&out_path, &rendered)?,
     }
     pb.finish_and_clear();
@@ -435,6 +451,9 @@ fn default_output(input: &Path, format: Format) -> PathBuf {
     let name = match format {
         Format::Pdf => format!("{stem}_repanel.pdf"),
         Format::Cbz => format!("{stem}_repanel.cbz"),
+        Format::Epub => format!("{stem}_repanel.epub"),
+        Format::Kepub => format!("{stem}_repanel.kepub.epub"),
+        Format::Azw3 => format!("{stem}_repanel.azw3"),
         Format::Images => format!("{stem}_repanel"),
     };
     input.parent().unwrap_or(Path::new(".")).join(name)

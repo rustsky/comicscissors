@@ -90,7 +90,7 @@ class ComicScissorsAction(InterfaceAction):
             # The book's original file has this format: keep it, and save ours as a data file instead,
             # "data/Title - Author_repanel.pdf" (shown under Data files in Book details).
             stem = os.path.splitext(os.path.basename(existing))[0]
-            name = f'{stem}_repanel.{opts["format"]}'
+            name = f'{stem}_repanel.{runner.EXTENSIONS[opts["format"]]}'
             db.add_extra_files(book_id, {f'data/{name}': out})
             msg = f'The original {fmt} was kept; saved {name} to the book\'s data files'
         shutil.rmtree(os.path.dirname(out), ignore_errors=True)
@@ -116,7 +116,7 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
     else:
         inp = os.path.join(work, f'{name}.{fmt.lower()}')
         shutil.copyfile(src, inp)
-    out = os.path.join(work, f'{name}_repanel.{opts["format"]}')
+    out = os.path.join(work, f'{name}_repanel.{runner.EXTENSIONS[opts["format"]]}')
 
     env = runner.tool_env()
     cmd = [runner.find_binary(), inp, '-o', out, '-f', opts['format']]
@@ -133,11 +133,12 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
         cmd.append('--overview')
     if opts['rect_crop']:
         cmd.append('--rect-crop')
-    if opts['format'] == 'pdf' and opts['ocr'] and runner.has_tesseract(env):
-        cmd += ['--lang', opts['lang']]
-    else:
-        if opts['format'] == 'pdf' and opts['ocr']:
-            log('Tesseract not found: converting without the dictionary text layer')
+    # The language also goes into EPUB/AZW3 metadata; only PDFs get the OCR text layer.
+    cmd += ['--lang', opts['lang']]
+    if opts['format'] == 'pdf' and opts['ocr'] and not runner.has_tesseract(env):
+        log('Tesseract not found: converting without the dictionary text layer')
+        cmd.append('--no-ocr')
+    elif opts['format'] == 'pdf' and not opts['ocr']:
         cmd.append('--no-ocr')
     cmd += shlex.split(opts['extra_args'], posix=not iswindows)
     runner.run(cmd, env, log, abort, progress)
