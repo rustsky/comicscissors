@@ -5,6 +5,7 @@
 //! AZW3 only, so the fixed-layout records are added to its header afterwards; Kindles then show
 //! the pages full screen, without margins.
 
+use crate::output::TocEntry;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::Write;
@@ -14,6 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Book<'a> {
     pub title: &'a str,
+    pub author: Option<&'a str>,
+    /// Chapters or pages to list in the table of contents (empty: just the start).
+    pub toc: &'a [TocEntry],
     /// BCP 47 language tag.
     pub lang: &'a str,
     pub width: u32,
@@ -56,6 +60,26 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
         )?;
     }
 
+    let mut toc: Vec<(String, usize)> =
+        b.toc.iter().filter(|e| e.page < pages.len()).map(|e| (xml_escape(&e.title), e.page + 1)).collect();
+    if toc.is_empty() {
+        toc.push((title.clone(), 1));
+    }
+    let nav_items: String =
+        toc.iter().map(|(t, n)| format!("<li><a href=\"pages/{n:05}.xhtml\">{t}</a></li>\n")).collect();
+    let nav_points: String = toc
+        .iter()
+        .enumerate()
+        .map(|(k, (t, n))| {
+            format!(
+                "<navPoint id=\"n{}\" playOrder=\"{}\"><navLabel><text>{t}</text></navLabel>\
+                 <content src=\"pages/{n:05}.xhtml\"/></navPoint>\n",
+                k + 1,
+                k + 1
+            )
+        })
+        .collect();
+
     zip.start_file("OEBPS/nav.xhtml", deflated)?;
     write!(
         zip,
@@ -63,7 +87,8 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang}" lang="{lang}">
 <head><title>{title}</title></head>
-<body><nav epub:type="toc" id="toc"><ol><li><a href="pages/00001.xhtml">{title}</a></li></ol></nav></body>
+<body><nav epub:type="toc" id="toc"><ol>
+{nav_items}</ol></nav></body>
 </html>
 "#,
         lang = b.lang
@@ -77,7 +102,8 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
 <head><meta name="dtb:uid" content="{id}"/></head>
 <docTitle><text>{title}</text></docTitle>
-<navMap><navPoint id="p1" playOrder="1"><navLabel><text>{title}</text></navLabel><content src="pages/00001.xhtml"/></navPoint></navMap>
+<navMap>
+{nav_points}</navMap>
 </ncx>
 "#
     )?;
@@ -102,7 +128,7 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
 <dc:identifier id="bookid">{id}</dc:identifier>
 <dc:title>{title}</dc:title>
 <dc:language>{lang}</dc:language>
-<dc:contributor>comic-scissors</dc:contributor>
+{creator}<dc:contributor>comic-scissors</dc:contributor>
 <meta property="dcterms:modified">{modified}</meta>
 <meta property="rendition:layout">pre-paginated</meta>
 <meta property="rendition:orientation">portrait</meta>
@@ -126,7 +152,8 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
 </package>
 "#,
         lang = b.lang,
-        modified = utc_now()
+        modified = utc_now(),
+        creator = b.author.map(|a| format!("<dc:creator>{}</dc:creator>\n", xml_escape(a))).unwrap_or_default()
     )?;
 
     // Lets front ends (the Calibre plugin) tell our output from an original book.
@@ -317,7 +344,8 @@ mod tests {
     fn epub_has_mimetype_first_and_fixed_layout() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.epub");
-        let book = Book { title: "Tom & Jerry", lang: "en", width: 1264, height: 1680, rtl: true };
+        let toc = [TocEntry { title: "Chapter 1".into(), page: 0 }, TocEntry { title: "Chapter 2".into(), page: 1 }];
+        let book = Book { title: "Tom & Jerry", author: Some("A & B"), toc: &toc, lang: "en", width: 1264, height: 1680, rtl: true };
         write_epub(&path, &[vec![0xff, 0xd8], vec![0xff, 0xd8]], &book).unwrap();
         let mut z = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(z.by_index(0).unwrap().name(), "mimetype");
@@ -325,6 +353,10 @@ mod tests {
         let mut opf = String::new();
         z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
         assert!(opf.contains("<dc:title>Tom &amp; Jerry</dc:title>"));
+        assert!(opf.contains("<dc:creator>A &amp; B</dc:creator>"));
+        let mut nav = String::new();
+        z.by_name("OEBPS/nav.xhtml").unwrap().read_to_string(&mut nav).unwrap();
+        assert!(nav.contains(r#"<a href="pages/00002.xhtml">Chapter 2</a>"#));
         assert!(opf.contains("pre-paginated") && opf.contains(r#"content="1264x1680""#));
         assert!(opf.contains(r#"page-progression-direction="rtl""#));
         assert!(opf.contains(r#"href="pages/00002.xhtml""#));

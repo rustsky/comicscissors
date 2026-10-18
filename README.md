@@ -41,7 +41,7 @@ the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to
 of the output type (a PDF comic repacked to PDF), the result is saved as the data file
 `data/Title - Author_repanel.pdf` instead, shown under *Data files* in Book details. Repacking
 again replaces only the earlier result.
-Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the image quality, the language, manga mode, full-page overviews and extra CLI flags.
+Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the image quality, the language, manga mode, full-page overviews, the cover page, auto contrast and extra CLI flags. The book's title and authors from the library go into the output's metadata.
 
 PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
 Calibre, and AZW3 is made with Calibre's own `ebook-convert`, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
@@ -66,6 +66,7 @@ comic-scissors mycomic.cbz -d kobo-libra-colour -f kepub   # -> mycomic_repanel.
 comic-scissors mycomic.cbz -d paperwhite-5 -f azw3        # Kindle book (needs calibre)
 comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
 comic-scissors mycomic.cbz -d kindle-11 --overview  # each full page, then its panels
+comic-scissors vol1.cbz -d oasis --title "Vol. 1" --author "Jane Doe"   # metadata
 comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
 comic-scissors mycomic.cbr -d kobo-libra-colour  # Kobo, PocketBook, Boox, Tolino, reMarkable, Nook
 comic-scissors --list-devices
@@ -127,6 +128,14 @@ installed (it is found on PATH or in calibre's default install folder).
    CPU core. Sound effects and stylised lettering are mostly not recognised.
 5. **Output**: grayscale JPEG pages (colour on Colorsoft or with `--color`), saved as PDF, EPUB,
    KEPUB, AZW3, CBZ or an image folder.
+   - **Cover**: the first page is kept whole, not split, so the e-reader's library shows it as
+     the cover (`--no-cover` splits it like the others).
+   - **Auto contrast**: each page is stretched so its paper (the median of the page edge)
+     becomes white and its darkest 1% black. Pages with dark borders or little contrast are
+     left alone. `--no-auto-levels` turns it off.
+   - **Bookmarks**: the PDF outline and the EPUB/AZW3 table of contents have one entry per
+     chapter when the archive or folder has a subfolder per chapter, otherwise one per page.
+   - **Metadata**: `--title` (default: the file name) and `--author`.
 
 ## Tuning
 
@@ -137,7 +146,8 @@ installed (it is found on PATH or in calibre's default install folder).
 | Wide panels too small | `--rotate` (puts them in landscape on their own page) |
 | Panels merged together | `--split-coverage 0.5`, `--threshold 30` |
 | Panels split too much | `--split-coverage 0.2` |
-| Washed-out e-ink | `--gamma 1.4` |
+| Washed-out e-ink | `--gamma 1.4` (after auto contrast) |
+| Paper or shading looks too bright | `--no-auto-levels` |
 | File too big | `-q 70` (JPEG quality, default 88), `--max-upscale 1.3` |
 | Dictionary lookup missing words | check `--lang`; copy the PDF over USB (Send to Kindle can drop the text layer) |
 | Neighbouring panels cut into an L-shaped panel | `--rect-crop` |

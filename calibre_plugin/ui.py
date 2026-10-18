@@ -43,7 +43,7 @@ class ComicScissorsAction(InterfaceAction):
         if not ids:
             return error_dialog(self.gui, 'No comics selected', 'Select one or more comics first.', show=True)
         db = self.gui.current_db.new_api
-        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'overview', 'quality', 'extra_args')}
+        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'overview', 'cover', 'auto_levels', 'quality', 'extra_args')}
         skipped = []
         for book_id in ids:
             title = db.field_for('title', book_id)
@@ -52,13 +52,16 @@ class ComicScissorsAction(InterfaceAction):
             if fmt is None:
                 skipped.append(title)
                 continue
+            # Written into the output's metadata, so the repacked file is titled like the book.
+            authors = [a for a in db.field_for('authors', book_id) if a != _('Unknown')]  # noqa: F821
+            book_opts = dict(opts, authors=' & '.join(authors))
             job = ThreadedJob(
                 'comic_scissors',
                 f'Repack for e-reader: {title}',
                 convert,
-                (db.format_abspath(book_id, fmt), fmt, title, opts),
+                (db.format_abspath(book_id, fmt), fmt, title, book_opts),
                 {},
-                partial(self.job_done, db, book_id, fmt, opts),
+                partial(self.job_done, db, book_id, fmt, book_opts),
                 max_concurrent_count=1,  # the CLI already uses every core
             )
             self.gui.job_manager.run_threaded_job(job)
@@ -119,7 +122,9 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
     out = os.path.join(work, f'{name}_repanel.{runner.EXTENSIONS[opts["format"]]}')
 
     env = runner.tool_env()
-    cmd = [runner.find_binary(), inp, '-o', out, '-f', opts['format']]
+    cmd = [runner.find_binary(), inp, '-o', out, '-f', opts['format'], '--title', title]
+    if opts.get('authors'):
+        cmd += ['--author', opts['authors']]
     if opts['device'] == 'custom':
         cmd += ['--width', str(opts['custom_width']), '--height', str(opts['custom_height']), '--ppi', str(opts['custom_ppi'])]
         if opts['custom_color']:
@@ -131,6 +136,10 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
     cmd += ['--quality', str(opts['quality'])]
     if opts['overview']:
         cmd.append('--overview')
+    if not opts['cover']:
+        cmd.append('--no-cover')
+    if not opts['auto_levels']:
+        cmd.append('--no-auto-levels')
     if opts['rect_crop']:
         cmd.append('--rect-crop')
     # The language also goes into EPUB/AZW3 metadata; only PDFs get the OCR text layer.

@@ -92,6 +92,15 @@ class ConfigWidget(QWidget):
         self.overview.setChecked(prefs['overview'])
         form.addRow(self.overview)
 
+        self.cover = QCheckBox('Keep the first page whole as the cover', self)
+        self.cover.setChecked(prefs['cover'])
+        form.addRow(self.cover)
+
+        self.auto_levels = QCheckBox('Auto contrast: white paper, black ink', self)
+        self.auto_levels.setToolTip('Stretches each page so grey or yellowed paper becomes white and faded ink black.')
+        self.auto_levels.setChecked(prefs['auto_levels'])
+        form.addRow(self.auto_levels)
+
         self.rect_crop = QCheckBox('Rectangle panels: crop each panel to its bounding box', self)
         self.rect_crop.setToolTip(
             'Fallback for when exact outlines cut panels badly, e.g. a neighbouring panel cut into an L shape.\n'
@@ -127,6 +136,8 @@ class ConfigWidget(QWidget):
         prefs['lang'] = self.lang.text().strip() or 'en'
         prefs['rtl'] = self.rtl.isChecked()
         prefs['overview'] = self.overview.isChecked()
+        prefs['cover'] = self.cover.isChecked()
+        prefs['auto_levels'] = self.auto_levels.isChecked()
         prefs['rect_crop'] = self.rect_crop.isChecked()
         prefs['extra_args'] = self.extra_args.text().strip()
         prefs['binary'] = self.binary.text().strip()

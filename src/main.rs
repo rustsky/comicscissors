@@ -107,6 +107,22 @@ struct Args {
     #[arg(long)]
     overview: bool,
 
+    /// Split the first page into panels too, instead of keeping it whole as the cover.
+    #[arg(long)]
+    no_cover: bool,
+
+    /// Keep each page's levels; by default the paper is made white and the darkest ink black.
+    #[arg(long)]
+    no_auto_levels: bool,
+
+    /// Book title (default: the input file name).
+    #[arg(long)]
+    title: Option<String>,
+
+    /// Book author, written into the PDF/EPUB/AZW3 metadata.
+    #[arg(long)]
+    author: Option<String>,
+
     /// Screen margin in pixels.
     #[arg(long, default_value_t = 8)]
     margin: u32,
@@ -223,7 +239,7 @@ fn run() -> Result<()> {
     let start = Instant::now();
     let tmp = tempfile::tempdir()?;
     let pb = progress::spinner("Loading", "");
-    let pages = input::collect_pages(&input, tmp.path(), args.pdf_dpi, &pb)?;
+    let input::Pages { paths: pages, chapters } = input::collect_pages(&input, tmp.path(), args.pdf_dpi, &pb)?;
     pb.finish_and_clear();
     println!("Loaded {} source page(s)", pages.len());
 
@@ -246,12 +262,15 @@ fn run() -> Result<()> {
         height: u32,
         panels: Vec<detect::Panel>,
         words: Vec<ocr::Word>,
+        chapter: String,
+        levels: Option<(u8, u8)>,
     }
     // A page that can't be read is skipped with a warning instead of failing the book.
     let analysed: Vec<Option<Analysed>> = pages
         .par_iter()
+        .zip(&chapters)
         .progress_with(pb.clone())
-        .map(|p| -> Result<Option<Analysed>> {
+        .map(|(p, chapter)| -> Result<Option<Analysed>> {
             let img = match output::load_image(p) {
                 Ok(img) => img,
                 Err(e) => {
@@ -264,7 +283,16 @@ fn run() -> Result<()> {
                 Some(lang) => ocr::recognize(&img, lang).with_context(|| format!("OCR of {}", p.display()))?,
                 None => Vec::new(),
             };
-            Ok(Some(Analysed { path: p.clone(), width: img.width(), height: img.height(), panels, words }))
+            let levels = if args.no_auto_levels { None } else { output::auto_levels(&img) };
+            Ok(Some(Analysed {
+                path: p.clone(),
+                width: img.width(),
+                height: img.height(),
+                panels,
+                words,
+                chapter: chapter.clone(),
+                levels,
+            }))
         })
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
@@ -351,7 +379,11 @@ fn run() -> Result<()> {
     let mut sources = Vec::new();
     let mut shapes = Vec::new();
     let mut words = Vec::new();
+    let mut levels = Vec::new();
+    let mut chapters = Vec::new();
     for a in analysed {
+        levels.push(a.levels);
+        chapters.push(a.chapter);
         sources.push(layout::SourcePage { width: a.width, height: a.height, panels: a.panels.iter().map(|p| p.rect).collect() });
         shapes.push(a.panels.into_iter().map(|p| p.shape).collect::<Vec<_>>());
         words.push(a.words);
@@ -370,6 +402,8 @@ fn run() -> Result<()> {
         rotate: args.rotate,
         page_break: args.page_break,
         overview: args.overview,
+        // A single page is the whole comic, not a cover.
+        cover: !args.no_cover && sources.len() > 1,
         rtl: args.rtl,
     };
     let out_pages = layout::layout(&sources, &lo);
@@ -386,23 +420,34 @@ fn run() -> Result<()> {
     let rendered: Vec<Vec<u8>> = out_pages
         .par_iter()
         .progress_with(pb.clone())
-        .map(|p| output::render_page(p, &pages, &shapes, &ro))
+        .map(|p| output::render_page(p, &pages, &shapes, &levels, &ro))
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
 
     let out_path = args.output.clone().unwrap_or_else(|| default_output(&input, args.format));
-    let title = input.file_stem().and_then(|s| s.to_str()).unwrap_or("comic");
+    let title = args.title.as_deref().unwrap_or_else(|| input.file_stem().and_then(|s| s.to_str()).unwrap_or("comic"));
+    let author = args.author.as_deref();
+    let toc = table_of_contents(&out_pages, &chapters, lo.cover);
     let pb = progress::spinner("Writing", &out_path.display().to_string());
     match args.format {
         Format::Pdf => {
             let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
             let tag = ocr_lang.as_ref().map(|_| ocr::bcp47(&lang));
-            output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, title, tag.as_deref())?
+            let info = output::DocInfo { title, author, lang: tag.as_deref(), toc: &toc };
+            output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, &info)?
         }
         Format::Cbz => output::write_cbz(&out_path, &rendered)?,
         Format::Epub | Format::Kepub | Format::Azw3 => {
             let tag = ocr::bcp47(&lang);
-            let book = epub::Book { title, lang: &tag, width: device.width, height: device.height, rtl: args.rtl };
+            let book = epub::Book {
+                title,
+                author,
+                toc: &toc,
+                lang: &tag,
+                width: device.width,
+                height: device.height,
+                rtl: args.rtl,
+            };
             if args.format == Format::Azw3 {
                 epub::write_azw3(&out_path, &rendered, &book)?
             } else {
@@ -419,6 +464,42 @@ fn run() -> Result<()> {
         start.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// Bookmarks: one per chapter when the pages came from two or more folders, otherwise one per
+/// source page. Each points to the first output page showing that source page.
+/// The cover gets its own entry.
+fn table_of_contents(out_pages: &[layout::OutPage], chapters: &[String], cover: bool) -> Vec<output::TocEntry> {
+    let mut first = vec![usize::MAX; chapters.len()];
+    for (i, p) in out_pages.iter().enumerate() {
+        for it in &p.items {
+            first[it.page] = first[it.page].min(i);
+        }
+    }
+    let by_chapter = chapters.iter().collect::<std::collections::HashSet<_>>().len() > 1;
+    let mut toc: Vec<output::TocEntry> = Vec::new();
+    let mut last: Option<&str> = None;
+    for (pi, &page) in first.iter().enumerate() {
+        if page == usize::MAX {
+            continue;
+        }
+        if cover && pi == 0 {
+            // The first chapter's entry then points to its first page after the cover.
+            toc.push(output::TocEntry { title: "Cover".into(), page });
+            continue;
+        }
+        let title = if by_chapter {
+            if last == Some(chapters[pi].as_str()) {
+                continue;
+            }
+            if chapters[pi].is_empty() { "Start".to_string() } else { chapters[pi].clone() }
+        } else {
+            format!("Page {}", pi + 1)
+        };
+        last = Some(&chapters[pi]);
+        toc.push(output::TocEntry { title, page });
+    }
+    toc
 }
 
 /// Per-page list of panels with confidence and reasons, doubtful ones marked.

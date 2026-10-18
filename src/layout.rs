@@ -7,7 +7,8 @@
 //! scaled up uniformly to use the leftover space.
 //!
 //! With `overview`, each source page is first shown whole on its own page,
-//! followed by its panels.
+//! followed by its panels. With `cover`, the first source page is shown whole and
+//! not split, so it works as the book's cover.
 
 use crate::detect::Rect;
 
@@ -34,6 +35,8 @@ pub struct LayoutOptions {
     pub page_break: bool,
     /// Show each source page whole before its panels.
     pub overview: bool,
+    /// Show the first source page whole, without its panels.
+    pub cover: bool,
     pub rtl: bool,
 }
 
@@ -90,13 +93,17 @@ pub fn layout(pages: &[SourcePage], o: &LayoutOptions) -> Vec<OutPage> {
         // Screen pixels per source pixel needed for readability.
         let target = o.readable_scale * o.print_height_in * o.ppi as f32 / sp.height as f32;
         let page = Rect { x: 0, y: 0, w: sp.width, h: sp.height };
-        if o.overview {
+        let cover = o.cover && pi == 0;
+        if o.overview || cover {
             let (w, h) = (sp.width as f32, sp.height as f32);
             let s = (uw / w).min(uh / h);
             let sr = (uw / h).min(uh / w);
             let rotated = o.rotate && w > h && sr > s * 1.2;
             let scale = if rotated { sr } else { s };
             units.push(Unit { page: pi, first: 0, panels: vec![page], scale, rotated, whole: true });
+            if cover {
+                continue;
+            }
             // A single panel covering most of the page would only repeat the overview.
             if let [p] = sp.panels[..] {
                 if p.area() as f32 > 0.9 * page.area() as f32 {
@@ -256,6 +263,7 @@ mod tests {
             rotate: false,
             page_break: false,
             overview,
+            cover: false,
             rtl: false,
         }
     }
@@ -277,6 +285,18 @@ mod tests {
         let pos = |x| order.iter().position(|&o| o == x).unwrap();
         assert!(pos((0, None)) < pos((0, Some(0))) && pos((0, Some(1))) < pos((1, None)));
         assert!(pos((1, None)) < pos((1, Some(0))));
+    }
+
+    #[test]
+    fn cover_is_whole_and_not_split() {
+        let half = |y| Rect { x: 0, y, w: 2000, h: 1400 };
+        let pages = [page(vec![half(0), half(1500)]), page(vec![half(0), half(1500)])];
+        let out = layout(&pages, &LayoutOptions { cover: true, ..opts(false) });
+        let items: Vec<(usize, Option<usize>)> = out.iter().flat_map(|p| p.items.iter().map(|it| (it.page, it.panel))).collect();
+        assert_eq!(items[0], (0, None));
+        assert_eq!(out[0].items.len(), 1, "the cover is alone on its page");
+        assert!(!items.contains(&(0, Some(0))), "the cover's panels are not repeated");
+        assert!(items.contains(&(1, Some(0))) && items.contains(&(1, Some(1))));
     }
 
     #[test]

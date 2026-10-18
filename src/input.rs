@@ -22,9 +22,34 @@ pub fn is_image(p: &Path) -> bool {
 
 /// Returns page image paths in reading order. Extracted/rendered files go in `tmp`.
 /// `pb` starts as a spinner and becomes a bar when the page count is known.
-pub fn collect_pages(input: &Path, tmp: &Path, pdf_dpi: u32, pb: &ProgressBar) -> Result<Vec<PathBuf>> {
+/// Source pages in reading order.
+pub struct Pages {
+    pub paths: Vec<PathBuf>,
+    /// Name of the folder each page is in ("" at the top level). Folders are chapters.
+    pub chapters: Vec<String>,
+}
+
+impl Pages {
+    fn flat(paths: Vec<PathBuf>) -> Self {
+        let chapters = vec![String::new(); paths.len()];
+        Pages { paths, chapters }
+    }
+
+    /// Pages found under `root`, with chapters taken from their folders.
+    fn in_folders(paths: Vec<PathBuf>, root: &Path) -> Self {
+        let chapters = paths.iter().map(|p| folder_name(p.strip_prefix(root).unwrap_or(p))).collect();
+        Pages { paths, chapters }
+    }
+}
+
+/// The innermost folder of a relative path to a file, e.g. "Chapter 2" for "Vol 1/Chapter 2/01.jpg".
+fn folder_name(rel: &Path) -> String {
+    rel.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+pub fn collect_pages(input: &Path, tmp: &Path, pdf_dpi: u32, pb: &ProgressBar) -> Result<Pages> {
     if input.is_dir() {
-        return images_in_dir(input);
+        return Ok(Pages::in_folders(images_in_dir(input)?, input));
     }
     if !input.exists() {
         bail!("input not found: {}", input.display());
@@ -32,8 +57,8 @@ pub fn collect_pages(input: &Path, tmp: &Path, pdf_dpi: u32, pb: &ProgressBar) -
     match ext_of(input).as_str() {
         "cbz" | "zip" => extract_zip(input, tmp, pb),
         "cbr" | "rar" | "cb7" | "7z" | "cbt" | "tar" => extract_with_tool(input, tmp, pb),
-        "pdf" => render_pdf(input, tmp, pdf_dpi, pb),
-        _ if is_image(input) => Ok(vec![input.to_path_buf()]),
+        "pdf" => render_pdf(input, tmp, pdf_dpi, pb).map(Pages::flat),
+        _ if is_image(input) => Ok(Pages::flat(vec![input.to_path_buf()])),
         e => bail!("unsupported input type '.{e}'"),
     }
 }
@@ -62,7 +87,7 @@ fn images_in_dir(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn extract_zip(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Vec<PathBuf>> {
+fn extract_zip(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Pages> {
     let file = fs::File::open(path)?;
     let mut zip = zip::ZipArchive::new(file).context("opening zip/cbz")?;
     let mut names: Vec<(usize, String)> = (0..zip.len())
@@ -79,6 +104,7 @@ fn extract_zip(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Vec<PathBuf>
     }
     progress::to_bar(pb, names.len());
     let mut out = Vec::new();
+    let chapters = names.iter().map(|(_, name)| folder_name(Path::new(name))).collect();
     for (n, (i, name)) in names.iter().enumerate() {
         let mut f = zip.by_index(*i)?;
         let dest = tmp.join(format!("{n:05}.{}", ext_of(Path::new(name))));
@@ -87,11 +113,11 @@ fn extract_zip(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Vec<PathBuf>
         out.push(dest);
         pb.inc(1);
     }
-    Ok(out)
+    Ok(Pages { paths: out, chapters })
 }
 
 /// CBR/CB7/CBT: delegate to bsdtar (ships with macOS, handles rar/7z via libarchive), unar or 7z.
-fn extract_with_tool(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Vec<PathBuf>> {
+fn extract_with_tool(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Pages> {
     let dir = tmp.join("archive");
     fs::create_dir_all(&dir)?;
     let attempts: [(&str, Vec<&std::ffi::OsStr>); 3] = [
@@ -108,7 +134,7 @@ fn extract_with_tool(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Vec<Pa
         if let Ok((st, _)) = run_watching(cmd, &dir, None, pb)
             && st.success()
         {
-            return images_in_dir(&dir);
+            return Ok(Pages::in_folders(images_in_dir(&dir)?, &dir));
         }
     }
     bail!("could not extract {} (install bsdtar, unar or 7z)", path.display())
