@@ -1,6 +1,7 @@
 """Find and run the comic-scissors binary. Nothing here touches the GUI, so jobs can call it."""
 
 import os
+import platform
 import shutil
 import subprocess
 import threading
@@ -29,12 +30,25 @@ prefs.defaults['binary'] = ''  # empty: the binary bundled with the plugin, then
 _bundled = None
 
 
+def _platform_dir():
+    """Folder of this platform's binary in the universal plugin zip (scripts/package.py --universal)."""
+    if iswindows:
+        return 'windows-x86_64'
+    if ismacos:
+        return 'macos-universal'
+    return 'linux-' + platform.machine()
+
+
 def bundled_binary():
-    """Unpack bin/comic-scissors from the plugin zip into calibre's config dir once per version."""
+    """Unpack the bundled comic-scissors from the plugin zip into calibre's config dir once per version.
+
+    The universal zip has one binary per platform in bin/<platform>/, a per-platform zip has it in bin/.
+    """
     global _bundled
     if _bundled is None:
         from calibre_plugins.comic_scissors import ComicScissorsPlugin
-        data = get_resources('bin/' + EXE)  # noqa: F821 (injected by calibre's plugin loader)
+        # get_resources is injected by calibre's plugin loader.
+        data = get_resources(f'bin/{_platform_dir()}/{EXE}') or get_resources('bin/' + EXE)  # noqa: F821
         if not data:
             _bundled = ''
             return None

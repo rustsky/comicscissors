@@ -30,6 +30,8 @@ other languages, run `brew install tesseract-lang`.
 Each [release](https://github.com/rustsky/comicscissors/releases) has one archive per platform
 (`linux-x86_64`, `macos-universal`, `windows-x86_64`) that holds the `comic-scissors` CLI and
 `comic-scissors-calibre-plugin.zip`. The plugin includes the same binary.
+`comic-scissors-<version>-calibre-plugin.zip` is the plugin for all three platforms: it holds every
+binary and picks the right one when it first runs.
 
 Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for e-reader**
 button to a toolbar. Select comics (CBZ, CBR, CB7 or PDF) and click it. The result is added to
@@ -45,7 +47,8 @@ Calibre, so nothing else needs to be installed. The text layer still needs Tesse
 the plugin converts without the text layer.
 
 Releases: bump `version` in `Cargo.toml`, commit, then `git tag v<version> && git push --tags`.
-CI builds the three archives and publishes the release. To build an archive locally:
+CI builds the three archives and the all-platform plugin zip, and publishes the release. To build
+an archive locally:
 
 ```sh
 cargo build --release
