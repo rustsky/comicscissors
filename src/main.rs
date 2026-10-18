@@ -5,6 +5,7 @@ mod layout;
 mod ocr;
 mod output;
 mod progress;
+mod refine;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -82,6 +83,10 @@ struct Args {
     /// Don't add the invisible OCR text layer used for dictionary lookup.
     #[arg(long)]
     no_ocr: bool,
+
+    /// Skip the second detection round for doubtful panels.
+    #[arg(long)]
+    no_refine: bool,
 
     /// Rotate wide panels to landscape when that makes them notably larger.
     #[arg(long)]
@@ -183,6 +188,11 @@ fn run() -> Result<()> {
                 println!("Text layer: {name} (dictionary lookup enabled)");
                 Some(code)
             }
+            // A language the user picked must work: silently writing a PDF without
+            // text would only show up later as a dictionary that does nothing.
+            Err(e) if args.lang.is_some() || prompted => {
+                bail!("{e:#}\n(or pass --no-ocr to convert without the dictionary text layer)")
+            }
             Err(e) => {
                 eprintln!("warning: {e:#}; continuing without a text layer");
                 None
@@ -211,44 +221,120 @@ fn run() -> Result<()> {
     }
     let pb = progress::bar("Detecting", pages.len(), if ocr_lang.is_some() { "pages (panels + text)" } else { "pages" });
     struct Analysed {
-        source: layout::SourcePage,
-        shapes: Vec<Option<detect::Shape>>,
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        panels: Vec<detect::Panel>,
         words: Vec<ocr::Word>,
     }
-    let analysed: Vec<Analysed> = pages
+    // A page that can't be read is skipped with a warning instead of failing the book.
+    let analysed: Vec<Option<Analysed>> = pages
         .par_iter()
-        .enumerate()
         .progress_with(pb.clone())
-        .map(|(i, p)| -> Result<Analysed> {
-            let img = output::load_image(p)?;
+        .map(|p| -> Result<Option<Analysed>> {
+            let img = match output::load_image(p) {
+                Ok(img) => img,
+                Err(e) => {
+                    pb.suspend(|| eprintln!("warning: skipping unreadable page {}: {e:#}", p.display()));
+                    return Ok(None);
+                }
+            };
             let panels = detect::detect_panels(&img, &det);
-            if let Some(d) = &args.debug_dir {
-                detect::debug_image(&img, &panels).save(d.join(format!("page{:04}.jpg", i + 1)))?;
-            }
             let words = match &ocr_lang {
                 Some(lang) => ocr::recognize(&img, lang).with_context(|| format!("OCR of {}", p.display()))?,
                 None => Vec::new(),
             };
-            let rects = panels.iter().map(|p| p.rect).collect();
-            let shapes = panels.into_iter().map(|p| p.shape).collect();
-            Ok(Analysed { source: layout::SourcePage { height: img.height(), panels: rects }, shapes, words })
+            Ok(Some(Analysed { path: p.clone(), width: img.width(), height: img.height(), panels, words }))
         })
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
+    let mut analysed: Vec<Analysed> = analysed.into_iter().flatten().collect();
+    if analysed.is_empty() {
+        bail!("no readable pages");
+    }
+
+    // Book-level check: a panel much bigger than the book's typical one, on a page with
+    // other panels, may be several panels merged.
+    let mut fractions: Vec<f32> = analysed
+        .iter()
+        .flat_map(|a| a.panels.iter().map(move |p| p.rect.area() as f32 / (a.width * a.height) as f32))
+        .collect();
+    fractions.sort_by(f32::total_cmp);
+    let median = fractions[fractions.len() / 2];
+    for a in &mut analysed {
+        let page_area = (a.width * a.height) as f32;
+        if a.panels.len() > 1 {
+            for p in &mut a.panels {
+                let ratio = p.rect.area() as f32 / page_area / median;
+                if ratio > 2.5 {
+                    p.add_issue(detect::Issue::Oversized);
+                } else if ratio > 1.5 {
+                    p.add_issue(detect::Issue::Large);
+                }
+            }
+        }
+    }
+    let n_panels: usize = analysed.iter().map(|a| a.panels.len()).sum();
+    let doubtful = |a: &[Analysed]| a.iter().flat_map(|a| &a.panels).filter(|p| p.is_low()).count();
+    let low_before = doubtful(&analysed);
+    if ocr_lang.is_some() {
+        let n_words: usize = analysed.iter().map(|a| a.words.len()).sum();
+        println!("Detected {n_panels} panel(s) ({low_before} doubtful), recognised {n_words} word(s)");
+    } else {
+        println!("Detected {n_panels} panel(s) ({low_before} doubtful)");
+    }
+
+    // Second round on pages with doubtful panels.
+    if !args.no_refine && low_before > 0 {
+        let todo: Vec<usize> = (0..analysed.len()).filter(|&i| analysed[i].panels.iter().any(|p| p.is_low())).collect();
+        let pb = progress::bar("Refining", todo.len(), "pages");
+        let results: Vec<(usize, Vec<detect::Panel>, refine::Stats)> = todo
+            .par_iter()
+            .progress_with(pb.clone())
+            .map(|&i| -> Result<_> {
+                let img = output::load_image(&analysed[i].path)?;
+                let (panels, stats) = refine::refine_page(&img, analysed[i].panels.clone(), args.rtl, det.padding);
+                Ok((i, panels, stats))
+            })
+            .collect::<Result<_>>()?;
+        pb.finish_and_clear();
+        let mut total = refine::Stats::default();
+        for (i, panels, st) in results {
+            analysed[i].panels = panels;
+            total.split += st.split;
+            total.pieces += st.pieces;
+            total.merged += st.merged;
+            total.dropped += st.dropped;
+        }
+        println!(
+            "Second round: split {} panel(s) into {}, merged {} fragment(s), dropped {} sliver(s); {} still doubtful",
+            total.split,
+            total.pieces,
+            total.merged,
+            total.dropped,
+            doubtful(&analysed)
+        );
+    }
+
+    if let Some(d) = &args.debug_dir {
+        let pb = progress::bar("Debug", analysed.len(), "pages");
+        analysed.par_iter().enumerate().progress_with(pb.clone()).try_for_each(|(i, a)| -> Result<()> {
+            let img = output::load_image(&a.path)?;
+            detect::debug_image(&img, &a.panels).save(d.join(format!("page{:04}.jpg", i + 1)))?;
+            Ok(())
+        })?;
+        pb.finish_and_clear();
+        std::fs::write(d.join("report.txt"), report(&analysed.iter().map(|a| (&a.path, &a.panels)).collect::<Vec<_>>()))?;
+    }
+
+    let pages: Vec<PathBuf> = analysed.iter().map(|a| a.path.clone()).collect();
     let mut sources = Vec::new();
     let mut shapes = Vec::new();
     let mut words = Vec::new();
     for a in analysed {
-        sources.push(a.source);
-        shapes.push(a.shapes);
+        sources.push(layout::SourcePage { height: a.height, panels: a.panels.iter().map(|p| p.rect).collect() });
+        shapes.push(a.panels.into_iter().map(|p| p.shape).collect::<Vec<_>>());
         words.push(a.words);
-    }
-    let n_panels: usize = sources.iter().map(|s| s.panels.len()).sum();
-    if ocr_lang.is_some() {
-        let n_words: usize = words.iter().map(Vec::len).sum();
-        println!("Detected {n_panels} panel(s), recognised {n_words} word(s)");
-    } else {
-        println!("Detected {n_panels} panel(s)");
     }
 
     // 2. Pack panels into Kindle pages.
@@ -289,7 +375,8 @@ fn run() -> Result<()> {
     match args.format {
         Format::Pdf => {
             let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
-            output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, title)?
+            let tag = ocr_lang.as_ref().map(|_| ocr::bcp47(&lang));
+            output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, title, tag.as_deref())?
         }
         Format::Cbz => output::write_cbz(&out_path, &rendered)?,
         Format::Images => output::write_images(&out_path, &rendered)?,
@@ -302,6 +389,31 @@ fn run() -> Result<()> {
         start.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// Per-page list of panels with confidence and reasons, doubtful ones marked.
+fn report(pages: &[(&PathBuf, &Vec<detect::Panel>)]) -> String {
+    let mut out = String::new();
+    for (i, (path, panels)) in pages.iter().enumerate() {
+        let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        out.push_str(&format!("page {} ({name}): {} panel(s)\n", i + 1, panels.len()));
+        for (k, p) in panels.iter().enumerate() {
+            let why: Vec<&str> = p.issues.iter().map(|i| i.label()).collect();
+            let mark = if p.is_low() { "  DOUBTFUL" } else { "" };
+            out.push_str(&format!(
+                "  #{:<2} conf {:.2}  {}x{} at {},{}{}{}\n",
+                k + 1,
+                p.confidence,
+                p.rect.w,
+                p.rect.h,
+                p.rect.x,
+                p.rect.y,
+                if why.is_empty() { String::new() } else { format!("  [{}]", why.join(", ")) },
+                mark
+            ));
+        }
+    }
+    out
 }
 
 fn default_output(input: &Path, device: &str, format: Format) -> PathBuf {

@@ -47,6 +47,17 @@ size of the screen.
    are then put in reading order: rows top to bottom, then left to right, or right to left with
    `--rtl`. Small regions such as page numbers are dropped.
 
+   **Confidence and second round.** Every panel gets a confidence score built from
+   simple checks: a notched outline, a cut at a speech balloon, a paper-coloured gutter-like
+   line inside it, little drawn border, tiny or sliver-shaped, or 1.5×/2.5× bigger than the
+   book's median panel. Doubtful panels get a second, stricter search at full resolution
+   for a straight gutter at any angle within ±12° of horizontal or vertical. A gutter counts
+   only if the line is at least 90% paper with a dark border line close by on *both* sides,
+   so caption boxes and horizons are not cut. If no gutter is found, the "gutter inside" and
+   "bigger than usual" doubts are cleared. Small doubtful fragments (title lettering) are
+   merged into the nearest panel, and slivers along the page edge (scan debris) are dropped.
+   Panels that stay doubtful are listed for review. `--no-refine` skips this round.
+
    Each panel keeps its outline (the convex hull of its blob), so slanted and irregular panels
    are cut out exactly and slivers of neighbouring panels are painted white. Use `--rect-crop`
    to crop plain bounding boxes instead.
@@ -76,4 +87,12 @@ size of the screen.
 | Washed-out e-ink | `--gamma 1.4` |
 | Dictionary lookup missing words | check `--lang`; copy the PDF over USB (Send to Kindle can drop the text layer) |
 | Neighbouring panels cut into an L-shaped panel | `--rect-crop` |
-| Check detection | `--debug-dir dbg/` writes each page with the detected panel outlines, numbered in reading order |
+| Check detection | `--debug-dir dbg/` writes each page with the detected panel outlines, numbered in reading order (`3?` = still doubtful), plus `report.txt` with each panel's confidence and the reasons |
+
+## Known limitations
+
+- Panels merged **without any gutter** (art or balloons run straight from one panel into the
+  next) can't be split; they're reported as doubtful (`much bigger than usual`).
+- A gutter crossed by artwork, not only by balloons, can be missed.
+- A balloon that crosses a slanted gutter is cut along the gutter, so its last letters can end
+  up with the neighbouring panel.

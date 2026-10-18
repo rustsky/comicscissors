@@ -33,10 +33,10 @@ impl Rect {
     pub fn bottom(&self) -> u32 {
         self.y + self.h
     }
-    fn right(&self) -> u32 {
+    pub fn right(&self) -> u32 {
         self.x + self.w
     }
-    fn overlap_area(&self, o: &Rect) -> u64 {
+    pub fn overlap_area(&self, o: &Rect) -> u64 {
         let ix = self.right().min(o.right()).saturating_sub(self.x.max(o.x));
         let iy = self.bottom().min(o.bottom()).saturating_sub(self.y.max(o.y));
         ix as u64 * iy as u64
@@ -69,6 +69,88 @@ const MAX_DEPTH: u32 = 12;
 pub struct Panel {
     pub rect: Rect,
     pub shape: Option<Shape>,
+    /// How much the detection can be trusted, 0..=1 (see [`Issue`]).
+    pub confidence: f32,
+    pub issues: Vec<Issue>,
+}
+
+/// Panels scoring below this are re-examined in a second round.
+pub const LOW_CONFIDENCE: f32 = 0.6;
+
+/// Why a panel's detection is doubtful. Each issue multiplies the confidence by its factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Issue {
+    /// The blob has notches: often two panels joined by a balloon.
+    Notched,
+    /// Cut out of a bigger blob along a balloon-crossed gutter.
+    Split,
+    /// A blank, gutter-like line runs across it: probably several panels.
+    InnerGutter,
+    /// Little of its outline is a drawn border: a fragment, a title or borderless art.
+    NoBorder,
+    /// Tiny or sliver-shaped for a panel.
+    Small,
+    /// Bigger than the book's typical panel on a page with other panels; ruled out
+    /// when the second round finds no gutter inside.
+    Large,
+    /// Far bigger than the book's typical panel on a page with other panels. Stays
+    /// doubtful even without a gutter: panels can also be merged without one.
+    Oversized,
+    /// Produced or re-checked by the second round (split along a gutter, merged,
+    /// or searched for a gutter at full resolution and none found).
+    Refined,
+}
+
+impl Issue {
+    pub fn factor(self) -> f32 {
+        match self {
+            Issue::Notched => 0.6,
+            Issue::Split => 0.85,
+            Issue::InnerGutter => 0.4,
+            Issue::NoBorder => 0.75,
+            Issue::Small => 0.55,
+            Issue::Large => 0.55,
+            Issue::Oversized => 0.55,
+            Issue::Refined => 1.0,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Issue::Notched => "notched outline",
+            Issue::Split => "split at a balloon",
+            Issue::InnerGutter => "gutter-like line inside",
+            Issue::NoBorder => "little border",
+            Issue::Small => "tiny or sliver",
+            Issue::Large => "bigger than usual",
+            Issue::Oversized => "much bigger than usual",
+            Issue::Refined => "re-checked in second round",
+        }
+    }
+}
+
+impl Panel {
+    pub fn new(rect: Rect, shape: Option<Shape>, issues: Vec<Issue>) -> Panel {
+        let confidence = issues.iter().map(|i| i.factor()).product();
+        Panel { rect, shape, confidence, issues }
+    }
+
+    pub fn add_issue(&mut self, issue: Issue) {
+        if !self.issues.contains(&issue) {
+            self.issues.push(issue);
+            self.confidence *= issue.factor();
+        }
+    }
+
+    /// Drop an issue that a stronger check ruled out.
+    pub fn clear_issue(&mut self, issue: Issue) {
+        self.issues.retain(|&i| i != issue);
+        self.confidence = self.issues.iter().map(|i| i.factor()).product();
+    }
+
+    pub fn is_low(&self) -> bool {
+        self.confidence < LOW_CONFIDENCE
+    }
 }
 
 /// Panel outline: a bit mask at analysis resolution placed in page coordinates.
@@ -86,7 +168,7 @@ pub struct Shape {
 }
 
 impl Shape {
-    fn from_mask(m: &Mask, ox: f32, oy: f32, sx: f32, sy: f32) -> Shape {
+    pub(crate) fn from_mask(m: &Mask, ox: f32, oy: f32, sx: f32, sy: f32) -> Shape {
         let mut bits = vec![0u64; (m.w * m.h).div_ceil(64)];
         for (i, _) in m.data.iter().enumerate().filter(|(_, b)| **b) {
             bits[i / 64] |= 1 << (i % 64);
@@ -133,18 +215,18 @@ impl Shape {
 const RECT_FILL: f32 = 0.97;
 
 #[derive(Clone)]
-struct Mask {
-    w: usize,
-    h: usize,
-    data: Vec<bool>,
+pub(crate) struct Mask {
+    pub(crate) w: usize,
+    pub(crate) h: usize,
+    pub(crate) data: Vec<bool>,
 }
 
 impl Mask {
-    fn new(w: usize, h: usize) -> Self {
+    pub(crate) fn new(w: usize, h: usize) -> Self {
         Mask { w, h, data: vec![false; w * h] }
     }
 
-    fn at(&self, x: usize, y: usize) -> bool {
+    pub(crate) fn at(&self, x: usize, y: usize) -> bool {
         self.data[y * self.w + x]
     }
 
@@ -172,7 +254,7 @@ impl Mask {
     /// Replace the mask with its convex hull. Panels are almost always convex, and the
     /// hull also closes white balloons that break through the panel border into the
     /// gutter, which would otherwise read as holes. L-shaped panels get their notch filled.
-    fn convex_fill(&self) -> Mask {
+    pub(crate) fn convex_fill(&self) -> Mask {
         // Pixel-corner points of each row's extent are enough to build the hull.
         let mut pts: Vec<(i64, i64)> = Vec::new();
         for y in 0..self.h {
@@ -238,7 +320,7 @@ impl Mask {
 
 pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
     let (ow, oh) = (img.width(), img.height());
-    let full = Panel { rect: Rect { x: 0, y: 0, w: ow, h: oh }, shape: None };
+    let full = Panel::new(Rect { x: 0, y: 0, w: ow, h: oh }, None, Vec::new());
     if ow < 32 || oh < 32 {
         return vec![full];
     }
@@ -264,6 +346,9 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
         data: gray.pixels().map(|p| (p[0] as i16 - bg as i16).abs() > thr).collect(),
     }
     .morph(1, false);
+
+    // Strictly paper-coloured pixels (pale art like sky is not paper).
+    let paper = Mask { w, h, data: gray.pixels().map(|p| (p[0] as i16 - bg as i16).abs() <= 20).collect() };
 
     let solid = solid_mask(&ink);
     let core = solid.morph(ERODE, true);
@@ -297,6 +382,7 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
         let local = Rect { x: 0, y: 0, w: own.w as u32, h: own.h as u32 };
         let min_seg = ((w as f32 * 0.08) as usize, (h as f32 * 0.06) as usize);
         split(&own, local, o.split_coverage, min_seg, 0, &mut parts);
+        let was_split = parts.len() > 1;
         for r in parts {
             // The piece's own pixels, grown by one pixel so the panel border line survives.
             let mut m = Mask::new(r.w as usize, r.h as usize);
@@ -305,22 +391,25 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
                     m.data[y * m.w + x] = own.at(r.x as usize + x, r.y as usize + y);
                 }
             }
-            let m = m.morph(1, false).convex_fill();
-            panels.push((Rect { x: r.x + x0 as u32, y: r.y + y0 as u32, ..r }, m));
+            let raw = m.morph(1, false);
+            let raw_count = raw.data.iter().filter(|&&b| b).count();
+            let m = raw.convex_fill();
+            panels.push(Cand { r: Rect { x: r.x + x0 as u32, y: r.y + y0 as u32, ..r }, m, raw_count, was_split });
         }
     }
 
     let min_area = (page_area * o.min_panel_area) as u64;
-    panels.retain(|(r, _)| r.area() >= min_area && r.w as f32 >= 0.03 * w as f32 && r.h as f32 >= 0.03 * h as f32);
+    panels.retain(|c| c.r.area() >= min_area && c.r.w as f32 >= 0.03 * w as f32 && c.r.h as f32 >= 0.03 * h as f32);
     // Drop boxes that sit mostly inside a bigger one (insets, stray balloons).
-    let all: Vec<Rect> = panels.iter().map(|(r, _)| *r).collect();
-    panels.retain(|(a, _)| !all.iter().any(|b| b.area() > a.area() && a.overlap_area(b) * 10 >= a.area() * 8));
-    let panels = reading_order(panels, |(r, _)| *r, o.rtl);
+    let all: Vec<Rect> = panels.iter().map(|c| c.r).collect();
+    panels.retain(|c| !all.iter().any(|b| b.area() > c.r.area() && c.r.overlap_area(b) * 10 >= c.r.area() * 8));
+    let panels = reading_order(panels, |c| c.r, o.rtl);
 
     let pad = (ow.min(oh) as f32 * o.padding).round() as i64;
     let panels: Vec<Panel> = panels
         .iter()
-        .map(|(r, m)| {
+        .map(|c| {
+            let (r, m) = (&c.r, &c.m);
             let x0 = ((r.x as f32 * fx).floor() as i64 - pad).max(0);
             let y0 = ((r.y as f32 * fy).floor() as i64 - pad).max(0);
             let x1 = ((r.right() as f32 * fx).ceil() as i64 + pad).min(ow as i64);
@@ -329,11 +418,126 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
             let fill = m.data.iter().filter(|&&b| b).count() as f32 / m.data.len().max(1) as f32;
             let shape = (o.exact_shapes && fill < RECT_FILL)
                 .then(|| Shape::from_mask(m, r.x as f32 * fx, r.y as f32 * fy, fx, fy));
-            Panel { rect, shape }
+            Panel::new(rect, shape, score(c, &ink, &paper, w, h))
         })
         .collect();
 
     if panels.is_empty() { vec![full] } else { panels }
+}
+
+/// A panel candidate at analysis resolution.
+#[derive(Clone)]
+struct Cand {
+    r: Rect,
+    /// Convex outline, local to `r`.
+    m: Mask,
+    /// Pixels of the blob itself before the convex fill.
+    raw_count: usize,
+    was_split: bool,
+}
+
+/// Page-local reasons to doubt a candidate. Book-level ones ([`Issue::Oversized`]) are added later.
+fn score(c: &Cand, ink: &Mask, paper: &Mask, page_w: usize, page_h: usize) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    let hull = c.m.data.iter().filter(|&&b| b).count().max(1);
+    if (c.raw_count as f32) < 0.88 * hull as f32 {
+        issues.push(Issue::Notched);
+    }
+    if c.was_split {
+        issues.push(Issue::Split);
+    }
+    if has_inner_gutter(c, ink, paper, page_h) {
+        issues.push(Issue::InnerGutter);
+    }
+    if border_fraction(c, ink) < 0.5 {
+        issues.push(Issue::NoBorder);
+    }
+    let (rw, rh) = (c.r.w as f32, c.r.h as f32);
+    if (c.r.area() as f32) < 0.03 * (page_w * page_h) as f32 || rw.max(rh) > 6.0 * rw.min(rh) {
+        issues.push(Issue::Small);
+    }
+    issues
+}
+
+/// A thin band of paper-coloured lines crossing the panel, bounded by border lines
+/// on both sides: the signature of a gutter between two panels that were merged.
+fn has_inner_gutter(c: &Cand, ink: &Mask, paper: &Mask, page_h: usize) -> bool {
+    let max_thin = ((page_h as f32 * 0.02) as usize).max(2);
+    // Blank fraction of each row and each column, counting only pixels inside the outline.
+    let (w, h) = (c.m.w, c.m.h);
+    let mut row_ink = vec![0usize; h];
+    let mut row_n = vec![0usize; h];
+    let mut row_paper = vec![0usize; h];
+    let mut col_ink = vec![0usize; w];
+    let mut col_n = vec![0usize; w];
+    let mut col_paper = vec![0usize; w];
+    for y in 0..h {
+        for x in 0..w {
+            if !c.m.at(x, y) {
+                continue;
+            }
+            let (px, py) = (c.r.x as usize + x, c.r.y as usize + y);
+            let i = ink.at(px, py) as usize;
+            let p = paper.at(px, py) as usize;
+            row_ink[y] += i;
+            row_n[y] += 1;
+            row_paper[y] += p;
+            col_ink[x] += i;
+            col_n[x] += 1;
+            col_paper[x] += p;
+        }
+    }
+    let blank_band = |inks: &[usize], papers: &[usize], ns: &[usize], span: usize| {
+        let blank: Vec<bool> = (0..ns.len())
+            .map(|j| ns[j] as f32 >= 0.6 * span as f32 && papers[j] as f32 >= 0.9 * ns[j] as f32)
+            .collect();
+        let len = blank.len();
+        let (lo, hi) = (len / 10, len - len / 10);
+        let mut i = lo;
+        while i < hi {
+            if !blank[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < hi && blank[i] {
+                i += 1;
+            }
+            let run = i - start;
+            // Border lines right before and after the band: mostly ink across the panel,
+            // unlike the blank rows between lines of caption text.
+            let inked = |j: usize| ns[j] > 0 && inks[j] as f32 > 0.55 * ns[j] as f32;
+            let before = (start.saturating_sub(4)..start).any(inked);
+            let after = (i..(i + 4).min(len)).any(inked);
+            if run <= max_thin && before && after {
+                return true;
+            }
+        }
+        false
+    };
+    blank_band(&row_ink, &row_paper, &row_n, w) || blank_band(&col_ink, &col_paper, &col_n, h)
+}
+
+/// Share of the outline that has ink right inside it (a drawn panel border).
+fn border_fraction(c: &Cand, ink: &Mask) -> f32 {
+    let (w, h) = (c.m.w as isize, c.m.h as isize);
+    let inside = |x: isize, y: isize| x >= 0 && y >= 0 && x < w && y < h && c.m.at(x as usize, y as usize);
+    let (mut edge, mut inked) = (0usize, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            if !inside(x, y) || (inside(x - 1, y) && inside(x + 1, y) && inside(x, y - 1) && inside(x, y + 1)) {
+                continue;
+            }
+            edge += 1;
+            let near = (-2..=2).any(|dy| {
+                (-2..=2).any(|dx| {
+                    inside(x + dx, y + dy) && ink.at((c.r.x as isize + x + dx) as usize, (c.r.y as isize + y + dy) as usize)
+                })
+            });
+            inked += near as usize;
+        }
+    }
+    if edge == 0 { 0.0 } else { inked as f32 / edge as f32 }
 }
 
 /// Andrew's monotone chain; returns hull vertices in order.
@@ -361,7 +565,7 @@ fn convex_hull(mut pts: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 }
 
 /// Median luma of a thin band around the page edge: the paper / gutter colour.
-fn background_luma(g: &GrayImage) -> u8 {
+pub(crate) fn background_luma(g: &GrayImage) -> u8 {
     let (w, h) = g.dimensions();
     let band = ((w.min(h) as f32 * 0.01) as u32).clamp(2, w.min(h) / 2);
     let mut hist = [0u64; 256];
@@ -526,7 +730,7 @@ fn segments(profile: &[usize], limit: usize, min_len: usize) -> Vec<(usize, usiz
 
 /// XY-cut over boxes: split into horizontal bands where no box straddles the cut
 /// (allowing 15% overlap for slanted panels), else into columns, recursively.
-fn reading_order<T: Clone>(boxes: Vec<T>, rect: fn(&T) -> Rect, rtl: bool) -> Vec<T> {
+pub(crate) fn reading_order<T: Clone>(boxes: Vec<T>, rect: fn(&T) -> Rect, rtl: bool) -> Vec<T> {
     if boxes.len() <= 1 {
         return boxes;
     }
@@ -563,9 +767,30 @@ fn reading_order<T: Clone>(boxes: Vec<T>, rect: fn(&T) -> Rect, rtl: bool) -> Ve
             return groups.into_iter().flat_map(|g| reading_order(g, rect, rtl)).collect();
         }
     }
+    // No clean cut (overlapping slanted panels): rows by vertical overlap, then across.
     let mut boxes = boxes;
-    boxes.sort_by_key(|t| (rect(t).y, rect(t).x));
-    boxes
+    boxes.sort_by_key(|t| rect(t).y + rect(t).h / 2);
+    let mut rows: Vec<Vec<T>> = Vec::new();
+    for t in boxes {
+        let r = rect(&t);
+        if let Some(row) = rows.last_mut() {
+            let top = row.iter().map(|x| rect(x).y).min().unwrap();
+            let bot = row.iter().map(|x| rect(x).bottom()).max().unwrap();
+            let overlap = bot.min(r.bottom()).saturating_sub(top.max(r.y));
+            if overlap as f32 >= 0.5 * r.h.min(bot - top) as f32 {
+                row.push(t);
+                continue;
+            }
+        }
+        rows.push(vec![t]);
+    }
+    for row in &mut rows {
+        row.sort_by_key(|t| rect(t).x + rect(t).w / 2);
+        if rtl {
+            row.reverse();
+        }
+    }
+    rows.into_iter().flatten().collect()
 }
 
 /// Draw detected panels on a copy of the page: exact outlines and numbered badges in reading order.
@@ -614,23 +839,24 @@ pub fn debug_image(img: &DynamicImage, panels: &[Panel]) -> image::RgbImage {
                 }
             }
         }
-        draw_number(&mut out, i + 1, cx, cy, (radius / 4.5).max(2.0));
+        let label = if p.is_low() { format!("{}?", i + 1) } else { (i + 1).to_string() };
+        draw_label(&mut out, &label, cx, cy, (radius / 4.5).max(2.0));
     }
     out
 }
 
-/// Draw `n` centred at (`cx`, `cy`) in white with a 3x5 pixel font scaled by `k`.
-fn draw_number(img: &mut image::RgbImage, n: usize, cx: f32, cy: f32, k: f32) {
+/// Draw digits and '?' centred at (`cx`, `cy`) in white with a 3x5 pixel font scaled by `k`.
+fn draw_label(img: &mut image::RgbImage, text: &str, cx: f32, cy: f32, k: f32) {
     const DIGITS: [[u8; 5]; 10] = [
         [7, 5, 5, 5, 7], [2, 6, 2, 2, 7], [7, 1, 7, 4, 7], [7, 1, 7, 1, 7], [5, 5, 7, 1, 1],
         [7, 4, 7, 1, 7], [7, 4, 7, 5, 7], [7, 1, 1, 1, 1], [7, 5, 7, 5, 7], [7, 5, 7, 1, 7],
     ];
-    let text = n.to_string();
+    const QUESTION: [u8; 5] = [7, 1, 2, 0, 2];
     let total_w = (text.len() as f32 * 4.0 - 1.0) * k;
     let (x0, y0) = (cx - total_w / 2.0, cy - 2.5 * k);
     let (w, h) = img.dimensions();
     for (di, ch) in text.bytes().enumerate() {
-        let glyph = DIGITS[(ch - b'0') as usize];
+        let glyph = if ch == b'?' { QUESTION } else { DIGITS[(ch - b'0') as usize] };
         for (row, bits) in glyph.iter().enumerate() {
             for col in 0..3 {
                 if bits >> (2 - col) & 1 == 0 {
