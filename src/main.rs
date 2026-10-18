@@ -16,7 +16,7 @@ use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq)]
 enum Format {
-    /// PDF sized to the Kindle screen (copy over USB; works on every Kindle).
+    /// PDF sized to the e-reader screen (copy over USB; works on every e-reader).
     Pdf,
     /// Comic book zip of JPEG pages (KOReader, Kindle Comic Converter, etc.).
     Cbz,
@@ -24,7 +24,7 @@ enum Format {
     Images,
 }
 
-/// Split comic pages into panels and repack them so they are readable on a Kindle without zooming.
+/// Split comic pages into panels and repack them so they are readable on an e-reader without zooming.
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
@@ -35,11 +35,11 @@ struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Kindle model (see --list-devices). Asked interactively when omitted.
+    /// E-reader model (see --list-devices). Asked interactively when omitted.
     #[arg(short, long)]
     device: Option<String>,
 
-    /// List known Kindle models and exit.
+    /// List known e-reader models and exit.
     #[arg(long)]
     list_devices: bool,
 
@@ -50,7 +50,7 @@ struct Args {
     height: Option<u32>,
     #[arg(long, requires_all = ["width", "height"])]
     ppi: Option<u32>,
-    /// Keep colour (default: only for colour Kindles).
+    /// Keep colour (default: only for colour e-readers).
     #[arg(long)]
     color: bool,
 
@@ -76,7 +76,7 @@ struct Args {
     rect_crop: bool,
 
     /// Language of the comic's text, e.g. en, fr, de, es, ja, fa (or a Tesseract code).
-    /// Asked interactively together with the Kindle model; defaults to English.
+    /// Asked interactively together with the e-reader model; defaults to English.
     #[arg(short, long)]
     lang: Option<String>,
 
@@ -92,7 +92,7 @@ struct Args {
     #[arg(long)]
     rotate: bool,
 
-    /// Never mix panels from different source pages on one Kindle page.
+    /// Never mix panels from different source pages on one e-reader page.
     #[arg(long)]
     page_break: bool,
 
@@ -169,6 +169,7 @@ fn run() -> Result<()> {
         (Some(id), _) => devices::find(id)
             .with_context(|| format!("unknown device '{id}' (see --list-devices)"))?,
         (None, Some(width)) => devices::Device {
+            brand: "custom".into(),
             id: format!("{width}x{}", args.height.unwrap()),
             name: "custom".into(),
             width,
@@ -344,7 +345,7 @@ fn run() -> Result<()> {
         words.push(a.words);
     }
 
-    // 2. Pack panels into Kindle pages.
+    // 2. Pack panels into e-reader pages.
     let lo = layout::LayoutOptions {
         screen_w: device.width,
         screen_h: device.height,
@@ -368,7 +369,7 @@ fn run() -> Result<()> {
         gamma: args.gamma,
         quality: args.quality,
     };
-    let pb = progress::bar("Rendering", out_pages.len(), "Kindle pages");
+    let pb = progress::bar("Rendering", out_pages.len(), "pages");
     let rendered: Vec<Vec<u8>> = out_pages
         .par_iter()
         .progress_with(pb.clone())
@@ -390,7 +391,7 @@ fn run() -> Result<()> {
     }
     pb.finish_and_clear();
     println!(
-        "Wrote {} Kindle page(s) to {} in {:.1}s",
+        "Wrote {} page(s) to {} in {:.1}s",
         rendered.len(),
         out_path.display(),
         start.elapsed().as_secs_f32()

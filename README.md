@@ -1,9 +1,12 @@
-# ComicScissors: comic & manga panel splitter for Kindle
+# ComicScissors
 
-Read comics and manga on a Kindle panel by panel, without zooming. ComicScissors detects the
-panels on each page of a PDF, CBZ, CBR or CB7, cuts them out and repacks them onto pages sized
-for your Kindle model. It runs as a command line tool on macOS, Windows and Linux, or as a
-Calibre plugin.
+**Comic & manga panel splitter for e-readers**
+
+Read comics and manga on a Kindle or any other e-reader panel by panel, without zooming.
+ComicScissors detects the panels on each page of a PDF, CBZ, CBR or CB7, cuts them out and
+repacks them onto pages sized for your device: Kindle, Kobo, PocketBook, Boox, Tolino,
+reMarkable and Nook models are built in, and any other screen size works too.
+It runs as a command line tool on macOS, Windows and Linux, or as a Calibre plugin.
 
 ![A comic page with five detected panels, repacked onto three Kindle Paperwhite pages](docs/demo.jpg)
 
@@ -28,14 +31,14 @@ Each [release](https://github.com/rustsky/comicscissors/releases) has one archiv
 (`linux-x86_64`, `macos-universal`, `windows-x86_64`) that holds the `comic-scissors` CLI and
 `comic-scissors-calibre-plugin.zip`. The plugin includes the same binary.
 
-Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for Kindle**
+Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for e-reader**
 button to a toolbar. Select comics (CBZ, CBR, CB7 or PDF) and click it. The result is added to
-the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to the Kindle with
+the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to the e-reader with
 *Send to device*. An original file is never replaced: when the book already has an original file
 of the output type (a PDF comic repacked to PDF), the result is saved as the data file
 `data/Title - Author_repanel.pdf` instead, shown under *Data files* in Book details. Repacking
 again replaces only the earlier result.
-Use the button's menu → *Settings* to choose the Kindle, the output format, the language, manga mode and extra CLI flags.
+Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the language, manga mode and extra CLI flags.
 
 PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
 Calibre, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
@@ -52,17 +55,18 @@ python3 scripts/package.py --binary target/release/comic-scissors --platform mac
 ## Use
 
 ```sh
-comic-scissors mycomic.cbz                       # asks which Kindle you have and the comic's language
+comic-scissors mycomic.cbz                       # asks which e-reader you have and the comic's language
 comic-scissors mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
 comic-scissors pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
 comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
 comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
+comic-scissors mycomic.cbr -d kobo-libra-colour  # Kobo, PocketBook, Boox, Tolino, reMarkable, Nook
 comic-scissors --list-devices
 comic-scissors in.cbz --width 1072 --height 1448 --ppi 300   # custom screen
 ```
 
-Copy the output PDF to the Kindle's `documents` folder over USB. Each page is exactly the
-size of the screen.
+Copy the output PDF to the e-reader over USB (on a Kindle, into its `documents` folder).
+Each page is exactly the size of the screen.
 
 ## How it works
 
@@ -92,7 +96,7 @@ size of the screen.
    to crop plain bounding boxes instead.
 3. **Layout**: each panel must appear at least `--readable-scale` (default 0.8) times its printed
    size. The tool works this out from the device ppi and `--print-height`. Panels from the same
-   row stay side by side when they fit. Otherwise they are stacked. Each Kindle page is filled
+   row stay side by side when they fit. Otherwise they are stacked. Each e-reader page is filled
    with as many panels as fit, and then scaled up to use any leftover space.
 4. **Text layer** (PDF only): each page is OCR'd with Tesseract, and every recognised word is
    placed as invisible text exactly over its lettering, following the panel's crop, scale and

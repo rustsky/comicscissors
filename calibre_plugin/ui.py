@@ -24,7 +24,7 @@ UNPACK = {'CBR', 'CB7', 'RAR', '7Z'}
 
 class ComicScissorsAction(InterfaceAction):
     name = 'ComicScissors'
-    action_spec = ('Repack for Kindle', 'convert.png', 'Split comic pages into panels and repack them for your Kindle', None)
+    action_spec = ('Repack for e-reader', 'convert.png', 'Split comic pages into panels and repack them for your e-reader', None)
     popup_type = QToolButton.ToolButtonPopupMode.MenuButtonPopup
     action_type = 'current'
 
@@ -43,7 +43,7 @@ class ComicScissorsAction(InterfaceAction):
         if not ids:
             return error_dialog(self.gui, 'No comics selected', 'Select one or more comics first.', show=True)
         db = self.gui.current_db.new_api
-        opts = {k: prefs[k] for k in ('device', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'extra_args')}
+        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'extra_args')}
         skipped = []
         for book_id in ids:
             title = db.field_for('title', book_id)
@@ -54,7 +54,7 @@ class ComicScissorsAction(InterfaceAction):
                 continue
             job = ThreadedJob(
                 'comic_scissors',
-                f'Repack for Kindle: {title}',
+                f'Repack for e-reader: {title}',
                 convert,
                 (db.format_abspath(book_id, fmt), fmt, title, opts),
                 {},
@@ -64,7 +64,7 @@ class ComicScissorsAction(InterfaceAction):
             self.gui.job_manager.run_threaded_job(job)
         started = len(ids) - len(skipped)
         if started:
-            self.gui.status_bar.show_message(f'Repacking {started} comic(s) for {opts["device"]}', 3000)
+            self.gui.status_bar.show_message(f'Repacking {started} comic(s)', 3000)
         if skipped:
             info_dialog(
                 self.gui,
@@ -83,7 +83,7 @@ class ComicScissorsAction(InterfaceAction):
         fmt = opts['format'].upper()
         existing = db.format_abspath(book_id, fmt)
         if existing is None or runner.made_by_us(existing, fmt):
-            # A new format, or replacing our own earlier output: listed under Formats, sendable to the Kindle.
+            # A new format, or replacing our own earlier output: listed under Formats, sendable to the e-reader.
             db.add_format(book_id, fmt, out, run_hooks=False)
             msg = f'Added {fmt} to {db.field_for("title", book_id)}'
         else:
@@ -119,7 +119,13 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
     out = os.path.join(work, f'{name}_repanel.{opts["format"]}')
 
     env = runner.tool_env()
-    cmd = [runner.find_binary(), inp, '-o', out, '-d', opts['device'], '-f', opts['format']]
+    cmd = [runner.find_binary(), inp, '-o', out, '-f', opts['format']]
+    if opts['device'] == 'custom':
+        cmd += ['--width', str(opts['custom_width']), '--height', str(opts['custom_height']), '--ppi', str(opts['custom_ppi'])]
+        if opts['custom_color']:
+            cmd.append('--color')
+    else:
+        cmd += ['-d', opts['device']]
     if opts['rtl']:
         cmd.append('--rtl')
     if opts['rect_crop']:
