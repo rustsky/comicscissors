@@ -43,7 +43,7 @@ class ComicScissorsAction(InterfaceAction):
         if not ids:
             return error_dialog(self.gui, 'No comics selected', 'Select one or more comics first.', show=True)
         db = self.gui.current_db.new_api
-        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'extra_args')}
+        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'overview', 'extra_args')}
         skipped = []
         for book_id in ids:
             title = db.field_for('title', book_id)
@@ -128,6 +128,8 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
         cmd += ['-d', opts['device']]
     if opts['rtl']:
         cmd.append('--rtl')
+    if opts['overview']:
+        cmd.append('--overview')
     if opts['rect_crop']:
         cmd.append('--rect-crop')
     if opts['format'] == 'pdf' and opts['ocr'] and runner.has_tesseract(env):

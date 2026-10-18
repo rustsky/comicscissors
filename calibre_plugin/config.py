@@ -78,6 +78,10 @@ class ConfigWidget(QWidget):
         self.rtl.setChecked(prefs['rtl'])
         form.addRow(self.rtl)
 
+        self.overview = QCheckBox('Show each original page whole before its panels', self)
+        self.overview.setChecked(prefs['overview'])
+        form.addRow(self.overview)
+
         self.rect_crop = QCheckBox('Rectangle panels: crop each panel to its bounding box', self)
         self.rect_crop.setToolTip(
             'Fallback for when exact outlines cut panels badly, e.g. a neighbouring panel cut into an L shape.\n'
@@ -111,6 +115,7 @@ class ConfigWidget(QWidget):
         prefs['ocr'] = self.ocr.isChecked()
         prefs['lang'] = self.lang.text().strip() or 'en'
         prefs['rtl'] = self.rtl.isChecked()
+        prefs['overview'] = self.overview.isChecked()
         prefs['rect_crop'] = self.rect_crop.isChecked()
         prefs['extra_args'] = self.extra_args.text().strip()
         prefs['binary'] = self.binary.text().strip()

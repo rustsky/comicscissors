@@ -290,7 +290,7 @@ pub fn place_words(page: &OutPage, words: &[Vec<Word>], shapes: &[Vec<Option<Sha
     let mut out = Vec::new();
     for it in &page.items {
         let src: Rect = it.src;
-        let shape = &shapes[it.page][it.panel];
+        let shape = it.panel.and_then(|i| shapes[it.page][i].as_ref());
         let (rw, rh) = if it.rotated { (it.h as f32, it.w as f32) } else { (it.w as f32, it.h as f32) };
         let (sx, sy) = (rw / src.w as f32, rh / src.h as f32);
         // Source point -> Kindle page point.
@@ -308,7 +308,7 @@ pub fn place_words(page: &OutPage, words: &[Vec<Word>], shapes: &[Vec<Option<Sha
                 && cy >= src.y as f32
                 && cx < (src.x + src.w) as f32
                 && cy < src.bottom() as f32
-                && shape.as_ref().is_none_or(|s| s.alpha(cx, cy) > 0.5);
+                && shape.is_none_or(|s| s.alpha(cx, cy) > 0.5);
             if !inside {
                 continue;
             }

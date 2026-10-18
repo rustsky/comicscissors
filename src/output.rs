@@ -44,7 +44,7 @@ pub fn render_page(
         let crop = img.crop_imm(it.src.x, it.src.y, it.src.w, it.src.h);
         let (rw, rh) = if it.rotated { (it.h, it.w) } else { (it.w, it.h) };
         let mut tile = crop.resize_exact(rw, rh, FilterType::Lanczos3).to_rgb8();
-        if let Some(shape) = &shapes[it.page][it.panel] {
+        if let Some(shape) = it.panel.and_then(|i| shapes[it.page][i].as_ref()) {
             // Paint everything outside the panel's outline white.
             let (sx, sy) = (it.src.w as f32 / rw as f32, it.src.h as f32 / rh as f32);
             for (x, y, p) in tile.enumerate_pixels_mut() {

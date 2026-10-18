@@ -40,7 +40,7 @@ the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to
 of the output type (a PDF comic repacked to PDF), the result is saved as the data file
 `data/Title - Author_repanel.pdf` instead, shown under *Data files* in Book details. Repacking
 again replaces only the earlier result.
-Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the language, manga mode and extra CLI flags.
+Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the language, manga mode, full-page overviews and extra CLI flags.
 
 PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
 Calibre, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
@@ -62,6 +62,7 @@ comic-scissors mycomic.cbz                       # asks which e-reader you have 
 comic-scissors mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
 comic-scissors pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
 comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
+comic-scissors mycomic.cbz -d kindle-11 --overview  # each full page, then its panels
 comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
 comic-scissors mycomic.cbr -d kobo-libra-colour  # Kobo, PocketBook, Boox, Tolino, reMarkable, Nook
 comic-scissors --list-devices
@@ -100,7 +101,8 @@ Each page is exactly the size of the screen.
 3. **Layout**: each panel must appear at least `--readable-scale` (default 0.8) times its printed
    size. The tool works this out from the device ppi and `--print-height`. Panels from the same
    row stay side by side when they fit. Otherwise they are stacked. Each e-reader page is filled
-   with as many panels as fit, and then scaled up to use any leftover space.
+   with as many panels as fit, and then scaled up to use any leftover space. With `--overview`, each
+   original page is first shown whole on its own page, then its panels follow.
 4. **Text layer** (PDF only): each page is OCR'd with Tesseract, and every recognised word is
    placed as invisible text exactly over its lettering, following the panel's crop, scale and
    rotation. Long-pressing a word on the Kindle then selects it for dictionary lookup,

@@ -96,6 +96,10 @@ struct Args {
     #[arg(long)]
     page_break: bool,
 
+    /// Show each original page whole before its panels.
+    #[arg(long)]
+    overview: bool,
+
     /// Screen margin in pixels.
     #[arg(long, default_value_t = 8)]
     margin: u32,
@@ -340,7 +344,7 @@ fn run() -> Result<()> {
     let mut shapes = Vec::new();
     let mut words = Vec::new();
     for a in analysed {
-        sources.push(layout::SourcePage { height: a.height, panels: a.panels.iter().map(|p| p.rect).collect() });
+        sources.push(layout::SourcePage { width: a.width, height: a.height, panels: a.panels.iter().map(|p| p.rect).collect() });
         shapes.push(a.panels.into_iter().map(|p| p.shape).collect::<Vec<_>>());
         words.push(a.words);
     }
@@ -357,6 +361,7 @@ fn run() -> Result<()> {
         max_upscale: args.max_upscale.max(1.0),
         rotate: args.rotate,
         page_break: args.page_break,
+        overview: args.overview,
         rtl: args.rtl,
     };
     let out_pages = layout::layout(&sources, &lo);

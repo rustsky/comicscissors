@@ -20,6 +20,7 @@ prefs.defaults['lang'] = 'en'
 prefs.defaults['ocr'] = True
 prefs.defaults['rtl'] = False
 prefs.defaults['rect_crop'] = False
+prefs.defaults['overview'] = False
 prefs.defaults['custom_width'] = 1264
 prefs.defaults['custom_height'] = 1680
 prefs.defaults['custom_ppi'] = 300
@@ -47,8 +48,13 @@ def bundled_binary():
     global _bundled
     if _bundled is None:
         from calibre_plugins.comic_scissors import ComicScissorsPlugin
+        from calibre.customize.ui import find_plugin
+        # Look before reading: get_resources prints a traceback for a missing name.
+        with zipfile.ZipFile(find_plugin(ComicScissorsPlugin.name).plugin_path) as z:
+            names = set(z.namelist())
+        name = next((n for n in (f'bin/{_platform_dir()}/{EXE}', 'bin/' + EXE) if n in names), None)
         # get_resources is injected by calibre's plugin loader.
-        data = get_resources(f'bin/{_platform_dir()}/{EXE}') or get_resources('bin/' + EXE)  # noqa: F821
+        data = get_resources(name) if name else None  # noqa: F821
         if not data:
             _bundled = ''
             return None
