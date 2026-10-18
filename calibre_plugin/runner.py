@@ -19,6 +19,10 @@ prefs.defaults['lang'] = 'en'
 prefs.defaults['ocr'] = True
 prefs.defaults['rtl'] = False
 prefs.defaults['rect_crop'] = False
+prefs.defaults['custom_width'] = 1264
+prefs.defaults['custom_height'] = 1680
+prefs.defaults['custom_ppi'] = 300
+prefs.defaults['custom_color'] = False
 prefs.defaults['extra_args'] = ''
 prefs.defaults['binary'] = ''  # empty: the binary bundled with the plugin, then PATH
 
@@ -101,13 +105,18 @@ def has_tesseract(env):
 
 
 def list_devices():
-    """[(id, description)] from `comic-scissors --list-devices`."""
+    """[(brand, id, name)] from `comic-scissors --list-devices`, which prints a "Brand:" line
+    followed by "  id  WIDTHxHEIGHT PPI ppi  name" lines."""
     out = subprocess.run([find_binary(), '--list-devices'], capture_output=True, text=True, **_no_window())
     devices = []
+    brand = ''
     for line in out.stdout.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2:
-            devices.append((parts[0], parts[1].strip()))
+        if line and not line[0].isspace() and line.endswith(':'):
+            brand = line[:-1]
+            continue
+        parts = line.split(None, 4)
+        if len(parts) == 5:
+            devices.append((brand, parts[0], parts[4]))
     return devices
 
 
@@ -118,7 +127,7 @@ STEPS = {
     'Loading': (0.03, 0.18, 'Loading pages'),
     'Detecting': (0.18, 0.75, 'Detecting panels'),
     'Refining': (0.75, 0.85, 'Checking doubtful panels'),
-    'Rendering': (0.85, 0.98, 'Rendering Kindle pages'),
+    'Rendering': (0.85, 0.98, 'Rendering pages'),
     'Writing': (0.98, 1.0, 'Writing file'),
 }
 ORDER = list(STEPS)

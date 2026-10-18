@@ -1,11 +1,11 @@
-"""Calibre plugin: repack comics for a Kindle with the comic-scissors command line tool."""
+"""Calibre plugin: repack comics for an e-reader with the comic-scissors command line tool."""
 
 from calibre.customize import InterfaceActionBase
 
 
 class ComicScissorsPlugin(InterfaceActionBase):
     name = 'ComicScissors'
-    description = 'Comic & manga panel splitter for Kindle: cuts out panels and repacks them so they are readable without zooming'
+    description = 'Comic & manga panel splitter for e-readers: cuts out panels and repacks them so they are readable without zooming'
     author = 'rustysky'
     # Both lines are rewritten by scripts/package.py for each release build.
     version = (0, 1, 0)

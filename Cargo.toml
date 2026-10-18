@@ -2,10 +2,10 @@
 name = "comic-scissors"
 version = "0.1.0"
 edition = "2024"
-description = "Comic & manga panel splitter for Kindle: cuts out panels and repacks them so they are readable without zooming"
+description = "Comic & manga panel splitter for e-readers: cuts out panels and repacks them so they are readable without zooming"
 repository = "https://github.com/rustsky/comicscissors"
 readme = "README.md"
-keywords = ["comics", "manga", "kindle", "cbz", "panel-detection"]
+keywords = ["comics", "manga", "kindle", "ereader", "panel-detection"]
 categories = ["command-line-utilities", "multimedia::images"]
 
 [dependencies]
