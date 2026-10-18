@@ -41,7 +41,7 @@ the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to
 of the output type (a PDF comic repacked to PDF), the result is saved as the data file
 `data/Title - Author_repanel.pdf` instead, shown under *Data files* in Book details. Repacking
 again replaces only the earlier result.
-Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the image quality, the language, manga mode, full-page overviews, the cover page, auto contrast and extra CLI flags. The book's title and authors from the library go into the output's metadata.
+Use the button's menu → *Settings* to choose the e-reader (or a custom screen size), the output format, the image quality, the language, manga mode, full-page overviews, webtoon mode, the cover page, auto contrast and extra CLI flags. The book's title and authors from the library go into the output's metadata.
 
 PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
 Calibre, and AZW3 is made with Calibre's own `ebook-convert`, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
@@ -67,6 +67,7 @@ comic-scissors mycomic.cbz -d paperwhite-5 -f azw3        # Kindle book (needs c
 comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
 comic-scissors mycomic.cbz -d kindle-11 --overview  # each full page, then its panels
 comic-scissors vol1.cbz -d oasis --title "Vol. 1" --author "Jane Doe"   # metadata
+comic-scissors episodes.cbz -d kobo-libra-colour --webtoon   # vertical scroll comic
 comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
 comic-scissors mycomic.cbr -d kobo-libra-colour  # Kobo, PocketBook, Boox, Tolino, reMarkable, Nook
 comic-scissors --list-devices
@@ -114,6 +115,13 @@ installed (it is found on PATH or in calibre's default install folder).
    Each panel keeps its outline (the convex hull of its blob), so slanted and irregular panels
    are cut out exactly and slivers of neighbouring panels are painted white. Use `--rect-crop`
    to crop plain bounding boxes instead.
+   **Webtoons** (`--webtoon`, chosen automatically when pages are over 3× taller than wide):
+   vertical-scroll comics have no pages or gutter grid. Consecutive images of the same width
+   (the slices an episode is saved as) are joined into one strip, and the strip is cut at
+   bands of plain background at least 1/50 of its width tall: the space between panels, in
+   any colour. Captions and balloons floating between panels stay with the strip in order.
+   Each piece is shown at the screen's width, and one taller than the screen is split at its
+   quietest row. Each subfolder (episode) gets its own bookmark.
 3. **Layout**: each panel must appear at least `--readable-scale` (default 0.8) times its printed
    size. The tool works this out from the device ppi and `--print-height`. Panels from the same
    row stay side by side when they fit. Otherwise they are stacked. Each e-reader page is filled

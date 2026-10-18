@@ -16,6 +16,9 @@ use crate::detect::Rect;
 pub struct SourcePage {
     pub width: u32,
     pub height: u32,
+    /// Show the panels at the screen's width instead of their printed size (webtoon pieces,
+    /// which have no printed page to measure against).
+    pub fit_width: bool,
     pub panels: Vec<Rect>,
 }
 
@@ -91,7 +94,11 @@ pub fn layout(pages: &[SourcePage], o: &LayoutOptions) -> Vec<OutPage> {
     let mut units = Vec::new();
     for (pi, sp) in pages.iter().enumerate() {
         // Screen pixels per source pixel needed for readability.
-        let target = o.readable_scale * o.print_height_in * o.ppi as f32 / sp.height as f32;
+        let target = if sp.fit_width {
+            uw / sp.width as f32
+        } else {
+            o.readable_scale * o.print_height_in * o.ppi as f32 / sp.height as f32
+        };
         let page = Rect { x: 0, y: 0, w: sp.width, h: sp.height };
         let cover = o.cover && pi == 0;
         if o.overview || cover {
@@ -269,7 +276,7 @@ mod tests {
     }
 
     fn page(panels: Vec<Rect>) -> SourcePage {
-        SourcePage { width: 2000, height: 3000, panels }
+        SourcePage { width: 2000, height: 3000, fit_width: false, panels }
     }
 
     #[test]

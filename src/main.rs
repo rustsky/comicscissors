@@ -7,6 +7,7 @@ mod ocr;
 mod output;
 mod progress;
 mod refine;
+mod webtoon;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -106,6 +107,11 @@ struct Args {
     /// Show each original page whole before its panels.
     #[arg(long)]
     overview: bool,
+
+    /// Webtoon (vertical scroll comic): join the slices, cut between panels at background gaps
+    /// and show them at screen width. Chosen automatically for pages over 3x taller than wide.
+    #[arg(long)]
+    webtoon: bool,
 
     /// Split the first page into panels too, instead of keeping it whole as the cover.
     #[arg(long)]
@@ -239,9 +245,19 @@ fn run() -> Result<()> {
     let start = Instant::now();
     let tmp = tempfile::tempdir()?;
     let pb = progress::spinner("Loading", "");
-    let input::Pages { paths: pages, chapters } = input::collect_pages(&input, tmp.path(), args.pdf_dpi, &pb)?;
+    let input::Pages { paths: mut pages, mut chapters } = input::collect_pages(&input, tmp.path(), args.pdf_dpi, &pb)?;
     pb.finish_and_clear();
     println!("Loaded {} source page(s)", pages.len());
+    let webtoon = args.webtoon || webtoon::looks_like_webtoon(&pages);
+    if webtoon {
+        let pb = progress::spinner("Loading", "cutting the webtoon strip");
+        let usable = |v: u32| v.saturating_sub(2 * args.margin).max(1) as f32;
+        let aspect = usable(device.height) / usable(device.width);
+        let cut = webtoon::cut(&pages, &chapters, &tmp.path().join("webtoon"), aspect)?;
+        pb.finish_and_clear();
+        println!("Webtoon: cut into {} piece(s) between panels", cut.paths.len());
+        (pages, chapters) = (cut.paths, cut.chapters);
+    }
 
     // 1. Detect panels on every page in parallel.
     let det = detect::DetectOptions {
@@ -278,7 +294,13 @@ fn run() -> Result<()> {
                     return Ok(None);
                 }
             };
-            let panels = detect::detect_panels(&img, &det);
+            // A webtoon piece is one panel (or a few stacked ones) already.
+            let panels = if webtoon {
+                let rect = detect::Rect { x: 0, y: 0, w: img.width(), h: img.height() };
+                vec![detect::Panel::new(rect, None, Vec::new())]
+            } else {
+                detect::detect_panels(&img, &det)
+            };
             let words = match &ocr_lang {
                 Some(lang) => ocr::recognize(&img, lang).with_context(|| format!("OCR of {}", p.display()))?,
                 None => Vec::new(),
@@ -384,7 +406,7 @@ fn run() -> Result<()> {
     for a in analysed {
         levels.push(a.levels);
         chapters.push(a.chapter);
-        sources.push(layout::SourcePage { width: a.width, height: a.height, panels: a.panels.iter().map(|p| p.rect).collect() });
+        sources.push(layout::SourcePage { width: a.width, height: a.height, fit_width: webtoon, panels: a.panels.iter().map(|p| p.rect).collect() });
         shapes.push(a.panels.into_iter().map(|p| p.shape).collect::<Vec<_>>());
         words.push(a.words);
     }
@@ -402,8 +424,8 @@ fn run() -> Result<()> {
         rotate: args.rotate,
         page_break: args.page_break,
         overview: args.overview,
-        // A single page is the whole comic, not a cover.
-        cover: !args.no_cover && sources.len() > 1,
+        // A single page is the whole comic, not a cover, and a webtoon has no cover page.
+        cover: !args.no_cover && sources.len() > 1 && !webtoon,
         rtl: args.rtl,
     };
     let out_pages = layout::layout(&sources, &lo);

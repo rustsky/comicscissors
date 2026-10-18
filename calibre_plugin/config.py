@@ -88,6 +88,11 @@ class ConfigWidget(QWidget):
         self.rtl.setChecked(prefs['rtl'])
         form.addRow(self.rtl)
 
+        self.webtoon = QCheckBox('Webtoon: vertical scroll comic (found automatically for very tall pages)', self)
+        self.webtoon.setToolTip('Joins the slices, cuts between panels at background gaps and shows them at screen width.')
+        self.webtoon.setChecked(prefs['webtoon'])
+        form.addRow(self.webtoon)
+
         self.overview = QCheckBox('Show each original page whole before its panels', self)
         self.overview.setChecked(prefs['overview'])
         form.addRow(self.overview)
@@ -136,6 +141,7 @@ class ConfigWidget(QWidget):
         prefs['lang'] = self.lang.text().strip() or 'en'
         prefs['rtl'] = self.rtl.isChecked()
         prefs['overview'] = self.overview.isChecked()
+        prefs['webtoon'] = self.webtoon.isChecked()
         prefs['cover'] = self.cover.isChecked()
         prefs['auto_levels'] = self.auto_levels.isChecked()
         prefs['rect_crop'] = self.rect_crop.isChecked()

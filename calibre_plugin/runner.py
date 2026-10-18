@@ -24,6 +24,7 @@ prefs.defaults['ocr'] = True
 prefs.defaults['rtl'] = False
 prefs.defaults['rect_crop'] = False
 prefs.defaults['overview'] = False
+prefs.defaults['webtoon'] = False
 prefs.defaults['cover'] = True
 prefs.defaults['auto_levels'] = True
 prefs.defaults['quality'] = 88
