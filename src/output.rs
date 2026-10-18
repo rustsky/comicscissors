@@ -113,7 +113,7 @@ pub fn write_pdf(
     let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", page_id(i))).collect();
     write!(w, "2 0 obj\n<< /Type /Pages /Count {n} /Kids [{}] >>\nendobj\n", kids.join(" "))?;
     offsets.push(w.pos);
-    write!(w, "3 0 obj\n<< /Title ({}) /Producer (comic-magic) >>\nendobj\n", pdf_escape(title))?;
+    write!(w, "3 0 obj\n<< /Title ({}) /Producer (comic-scissors) >>\nendobj\n", pdf_escape(title))?;
 
     for (i, jpeg) in pages.iter().enumerate() {
         let id = page_id(i);
@@ -279,7 +279,7 @@ pub fn write_cbz(path: &Path, pages: &[Vec<u8>]) -> Result<()> {
         zip.write_all(jpeg)?;
     }
     // Lets front ends (the Calibre plugin) tell our output from an original comic.
-    zip.set_comment("comic-magic")?;
+    zip.set_comment("comic-scissors")?;
     zip.finish()?;
     Ok(())
 }
@@ -315,7 +315,7 @@ mod tests {
                 text: t.to_string(),
             })
             .collect();
-        let path = std::env::temp_dir().join("comic-magic-unicode-test.pdf");
+        let path = std::env::temp_dir().join("comic-scissors-unicode-test.pdf");
         write_pdf(&path, &[jpeg], &[words], &o, 300, "t", Some("de")).unwrap();
         let pdf = fs::read(&path).unwrap();
         let has = |s: &[u8]| pdf.windows(s.len()).any(|w| w == s);

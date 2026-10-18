@@ -1,7 +1,9 @@
-# comic-kindle
+# ComicScissors: comic & manga panel splitter for Kindle
 
-Detects comic panels, crops them, and repacks them onto pages sized for a specific Kindle,
-so every panel is readable without zooming.
+Read comics and manga on a Kindle panel by panel, without zooming. ComicScissors detects the
+panels on each page of a PDF, CBZ, CBR or CB7, cuts them out and repacks them onto pages sized
+for your Kindle model. It runs as a command line tool on macOS, Windows and Linux, or as a
+Calibre plugin.
 
 ![A comic page with five detected panels, repacked onto three Kindle Paperwhite pages](docs/demo.jpg)
 
@@ -12,7 +14,7 @@ Public domain, via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:A
 
 ```sh
 cargo build --release
-# binary: target/release/comic-magic
+# binary: target/release/comic-scissors
 ```
 
 PDF input needs `mutool` (MuPDF) or `pdftoppm` (Poppler) on PATH (`brew install mupdf`).
@@ -22,9 +24,9 @@ other languages, run `brew install tesseract-lang`.
 
 ## Calibre plugin
 
-Each [release](https://github.com/rustsky/comic_magic/releases) has one archive per platform
-(`linux-x86_64`, `macos-universal`, `windows-x86_64`) that holds the `comic-magic` CLI and
-`comic-magic-calibre-plugin.zip`. The plugin includes the same binary.
+Each [release](https://github.com/rustsky/comicscissors/releases) has one archive per platform
+(`linux-x86_64`, `macos-universal`, `windows-x86_64`) that holds the `comic-scissors` CLI and
+`comic-scissors-calibre-plugin.zip`. The plugin includes the same binary.
 
 Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for Kindle**
 button to a toolbar. Select comics (CBZ, CBR, CB7 or PDF) and click it. The result is added to
@@ -44,19 +46,19 @@ CI builds the three archives and publishes the release. To build an archive loca
 
 ```sh
 cargo build --release
-python3 scripts/package.py --binary target/release/comic-magic --platform macos-arm64   # -> dist/
+python3 scripts/package.py --binary target/release/comic-scissors --platform macos-arm64   # -> dist/
 ```
 
 ## Use
 
 ```sh
-comic-magic mycomic.cbz                       # asks which Kindle you have and the comic's language
-comic-magic mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
-comic-magic pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
-comic-magic manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
-comic-magic bd.cbz -d paperwhite-5 --lang fr       # French text layer
-comic-magic --list-devices
-comic-magic in.cbz --width 1072 --height 1448 --ppi 300   # custom screen
+comic-scissors mycomic.cbz                       # asks which Kindle you have and the comic's language
+comic-scissors mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
+comic-scissors pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
+comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
+comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
+comic-scissors --list-devices
+comic-scissors in.cbz --width 1072 --height 1448 --ppi 300   # custom screen
 ```
 
 Copy the output PDF to the Kindle's `documents` folder over USB. Each page is exactly the

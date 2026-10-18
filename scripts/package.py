@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Build the release bundle for one platform: the CLI binary plus the Calibre plugin zip.
 
-    python3 scripts/package.py --binary target/release/comic-magic --platform macos-universal
+    python3 scripts/package.py --binary target/release/comic-scissors --platform macos-universal
 
-writes dist/comic-magic-<version>-<platform>.tar.gz (.zip for Windows) containing
+writes dist/comic-scissors-<version>-<platform>.tar.gz (.zip for Windows) containing
 
-    comic-magic[.exe]
-    comic-magic-calibre-plugin.zip   (with the same binary in bin/)
+    comic-scissors[.exe]
+    comic-scissors-calibre-plugin.zip   (with the same binary in bin/)
     README.md
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DIR = ROOT / 'calibre_plugin'
-PLUGIN_ZIP = 'comic-magic-calibre-plugin.zip'
+PLUGIN_ZIP = 'comic-scissors-calibre-plugin.zip'
 CALIBRE_PLATFORM = {'linux': 'linux', 'macos': 'osx', 'windows': 'windows'}
 
 
@@ -61,7 +61,7 @@ def plugin_zip(binary, exe, version, os_name):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--binary', type=Path, required=True, help='built comic-magic executable')
+    ap.add_argument('--binary', type=Path, required=True, help='built comic-scissors executable')
     ap.add_argument('--platform', required=True, help='e.g. linux-x86_64, macos-universal, windows-x86_64')
     ap.add_argument('--out', type=Path, default=ROOT / 'dist')
     ap.add_argument('--version', default=cargo_version(), help='default: version in Cargo.toml')
@@ -70,8 +70,8 @@ def main():
     os_name = args.platform.split('-')[0]
     if os_name not in CALIBRE_PLATFORM:
         ap.error(f'platform must start with one of {", ".join(CALIBRE_PLATFORM)}')
-    exe = 'comic-magic.exe' if os_name == 'windows' else 'comic-magic'
-    stem = f'comic-magic-{args.version}-{args.platform}'
+    exe = 'comic-scissors.exe' if os_name == 'windows' else 'comic-scissors'
+    stem = f'comic-scissors-{args.version}-{args.platform}'
     args.out.mkdir(parents=True, exist_ok=True)
 
     files = [

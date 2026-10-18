@@ -62,19 +62,19 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p target/universal
-          lipo -create -output target/universal/comic-magic \
-            target/aarch64-apple-darwin/release/comic-magic \
-            target/x86_64-apple-darwin/release/comic-magic
+          lipo -create -output target/universal/comic-scissors \
+            target/aarch64-apple-darwin/release/comic-scissors \
+            target/x86_64-apple-darwin/release/comic-scissors
           # Ad-hoc signature: Apple Silicon refuses to run unsigned binaries.
-          codesign --force --sign - target/universal/comic-magic
+          codesign --force --sign - target/universal/comic-scissors
 
       - name: Package
         shell: bash
         run: |
           case "$RUNNER_OS" in
-            macOS)   bin=target/universal/comic-magic ;;
-            Windows) bin=target/$TARGETS/release/comic-magic.exe ;;
-            *)       bin=target/$TARGETS/release/comic-magic ;;
+            macOS)   bin=target/universal/comic-scissors ;;
+            Windows) bin=target/$TARGETS/release/comic-scissors.exe ;;
+            *)       bin=target/$TARGETS/release/comic-scissors ;;
           esac
           "$bin" --list-devices
           python scripts/package.py --binary "$bin" --platform "$PLATFORM"

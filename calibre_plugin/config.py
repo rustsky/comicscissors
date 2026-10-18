@@ -2,8 +2,8 @@
 
 from qt.core import QCheckBox, QComboBox, QFormLayout, QLabel, QLineEdit, QWidget
 
-from calibre_plugins.comic_magic import runner
-from calibre_plugins.comic_magic.runner import prefs
+from calibre_plugins.comic_scissors import runner
+from calibre_plugins.comic_scissors.runner import prefs
 
 
 class ConfigWidget(QWidget):
@@ -18,7 +18,7 @@ class ConfigWidget(QWidget):
             for dev_id, desc in runner.list_devices():
                 self.device.addItem(f'{dev_id}  -  {desc}', dev_id)
         except Exception as e:
-            form.addRow(QLabel(f'Could not run comic-magic: {e}', self))
+            form.addRow(QLabel(f'Could not run comic-scissors: {e}', self))
         i = self.device.findData(prefs['device'])
         if i >= 0:
             self.device.setCurrentIndex(i)
@@ -57,8 +57,8 @@ class ConfigWidget(QWidget):
         form.addRow('Extra options:', self.extra_args)
 
         self.binary = QLineEdit(prefs['binary'], self)
-        self.binary.setPlaceholderText('empty: use the bundled comic-magic')
-        form.addRow('comic-magic binary:', self.binary)
+        self.binary.setPlaceholderText('empty: use the bundled comic-scissors')
+        form.addRow('comic-scissors binary:', self.binary)
 
     def save_settings(self):
         i = self.device.currentIndex()

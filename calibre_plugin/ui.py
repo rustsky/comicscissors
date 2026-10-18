@@ -13,8 +13,8 @@ from calibre.gui2.threaded_jobs import ThreadedJob
 from calibre.ptempfile import PersistentTemporaryDirectory
 from qt.core import QMenu, QToolButton
 
-from calibre_plugins.comic_magic import runner
-from calibre_plugins.comic_magic.runner import prefs
+from calibre_plugins.comic_scissors import runner
+from calibre_plugins.comic_scissors.runner import prefs
 
 # Source formats in order of preference.
 SOURCES = ('CBZ', 'CBR', 'CB7', 'ZIP', 'RAR', '7Z', 'PDF')
@@ -22,8 +22,8 @@ SOURCES = ('CBZ', 'CBR', 'CB7', 'ZIP', 'RAR', '7Z', 'PDF')
 UNPACK = {'CBR', 'CB7', 'RAR', '7Z'}
 
 
-class ComicMagicAction(InterfaceAction):
-    name = 'Comic Magic'
+class ComicScissorsAction(InterfaceAction):
+    name = 'ComicScissors'
     action_spec = ('Repack for Kindle', 'convert.png', 'Split comic pages into panels and repack them for your Kindle', None)
     popup_type = QToolButton.ToolButtonPopupMode.MenuButtonPopup
     action_type = 'current'
@@ -53,7 +53,7 @@ class ComicMagicAction(InterfaceAction):
                 skipped.append(title)
                 continue
             job = ThreadedJob(
-                'comic_magic',
+                'comic_scissors',
                 f'Repack for Kindle: {title}',
                 convert,
                 (db.format_abspath(book_id, fmt), fmt, title, opts),
@@ -75,11 +75,11 @@ class ComicMagicAction(InterfaceAction):
 
     def job_done(self, db, book_id, src_fmt, opts, job):
         if job.failed:
-            return self.gui.job_exception(job, dialog_title='Comic Magic failed')
+            return self.gui.job_exception(job, dialog_title='ComicScissors failed')
         out = job.result
         if not db.has_id(book_id):
             shutil.rmtree(os.path.dirname(out), ignore_errors=True)
-            return error_dialog(self.gui, 'Comic Magic', 'The book was deleted while it was being repacked.', show=True)
+            return error_dialog(self.gui, 'ComicScissors', 'The book was deleted while it was being repacked.', show=True)
         fmt = opts['format'].upper()
         existing = db.format_abspath(book_id, fmt)
         if existing is None or runner.made_by_us(existing, fmt):
@@ -104,7 +104,7 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
     """Runs in a job thread. Returns the path of the repacked file."""
     progress = runner.Progress(notifications, log)
     progress.update('Preparing')
-    work = PersistentTemporaryDirectory('_comic_magic')
+    work = PersistentTemporaryDirectory('_comic_scissors')
     # The CLI uses the input file name as the PDF title.
     name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', title).strip(' .')[:80] or 'comic'
     if fmt in UNPACK:

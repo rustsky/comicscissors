@@ -1,4 +1,4 @@
-"""Find and run the comic-magic binary. Nothing here touches the GUI, so jobs can call it."""
+"""Find and run the comic-scissors binary. Nothing here touches the GUI, so jobs can call it."""
 
 import os
 import shutil
@@ -10,9 +10,9 @@ import zipfile
 from calibre.constants import ismacos, iswindows
 from calibre.utils.config import JSONConfig, config_dir
 
-EXE = 'comic-magic.exe' if iswindows else 'comic-magic'
+EXE = 'comic-scissors.exe' if iswindows else 'comic-scissors'
 
-prefs = JSONConfig('plugins/comic_magic')
+prefs = JSONConfig('plugins/comic_scissors')
 prefs.defaults['device'] = 'paperwhite-5'
 prefs.defaults['format'] = 'pdf'
 prefs.defaults['lang'] = 'en'
@@ -26,16 +26,16 @@ _bundled = None
 
 
 def bundled_binary():
-    """Unpack bin/comic-magic from the plugin zip into calibre's config dir once per version."""
+    """Unpack bin/comic-scissors from the plugin zip into calibre's config dir once per version."""
     global _bundled
     if _bundled is None:
-        from calibre_plugins.comic_magic import ComicMagicPlugin
+        from calibre_plugins.comic_scissors import ComicScissorsPlugin
         data = get_resources('bin/' + EXE)  # noqa: F821 (injected by calibre's plugin loader)
         if not data:
             _bundled = ''
             return None
-        version = '.'.join(map(str, ComicMagicPlugin.version))
-        path = os.path.join(config_dir, 'plugins', 'comic_magic', version, EXE)
+        version = '.'.join(map(str, ComicScissorsPlugin.version))
+        path = os.path.join(config_dir, 'plugins', 'comic_scissors', version, EXE)
         if not os.path.exists(path) or os.path.getsize(path) != len(data):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + '.part'
@@ -50,14 +50,14 @@ def bundled_binary():
 
 
 def made_by_us(path, fmt):
-    """True for a PDF or CBZ written by comic-magic (an earlier repack), False for an original."""
+    """True for a PDF or CBZ written by comic-scissors (an earlier repack), False for an original."""
     try:
         if fmt == 'PDF':
             with open(path, 'rb') as f:
-                return b'/Producer (comic-magic)' in f.read(1 << 16)
+                return b'/Producer (comic-scissors)' in f.read(1 << 16)
         if fmt == 'CBZ':
             with zipfile.ZipFile(path) as z:
-                return z.comment == b'comic-magic'
+                return z.comment == b'comic-scissors'
     except (OSError, TypeError, zipfile.BadZipFile):
         pass
     return False
@@ -67,11 +67,11 @@ def find_binary():
     custom = prefs['binary'].strip()
     if custom:
         if not os.path.isfile(custom):
-            raise FileNotFoundError(f'comic-magic binary not found: {custom}')
+            raise FileNotFoundError(f'comic-scissors binary not found: {custom}')
         return custom
     path = bundled_binary() or shutil.which(EXE, path=tool_env()['PATH'])
     if not path:
-        raise FileNotFoundError('comic-magic binary not found: set its path in the plugin settings')
+        raise FileNotFoundError('comic-scissors binary not found: set its path in the plugin settings')
     return path
 
 
@@ -101,7 +101,7 @@ def has_tesseract(env):
 
 
 def list_devices():
-    """[(id, description)] from `comic-magic --list-devices`."""
+    """[(id, description)] from `comic-scissors --list-devices`."""
     out = subprocess.run([find_binary(), '--list-devices'], capture_output=True, text=True, **_no_window())
     devices = []
     for line in out.stdout.splitlines():
@@ -229,7 +229,7 @@ def run(cmd, env, log, abort, progress=None):
     if abort.is_set():
         raise RuntimeError('cancelled')
     if p.returncode != 0:
-        raise RuntimeError('comic-magic failed:\n' + '\n'.join(lines[-20:]))
+        raise RuntimeError('comic-scissors failed:\n' + '\n'.join(lines[-20:]))
 
 
 def _no_window():
