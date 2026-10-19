@@ -18,6 +18,12 @@ const WORK_MAX: u32 = 2400;
 const MAX_SLOPE: f32 = 0.2126;
 const SLOPE_STEP: f32 = 0.0087;
 const MAX_DEPTH: u32 = 3;
+/// A gutter crossed by art: at least this share paper, with frame lines at least
+/// `CROSSED_BORDER` dark on both sides.
+const CROSSED_PAPER: f32 = 0.72;
+const CROSSED_BORDER: f32 = 0.7;
+/// A black frame line between two panels: share of dark pixels along it.
+const BLACK_LINE: f32 = 0.85;
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Stats {
@@ -55,7 +61,10 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
     let mut out: Vec<Panel> = Vec::new();
     let mut fragments: Vec<Panel> = Vec::new();
     for p in panels {
-        if !p.is_low() {
+        // A box grown around text keeps its shape, unless it is far bigger than usual: then it
+        // may hold several panels joined without a white gutter.
+        let oversized = p.issues.contains(&Issue::Oversized);
+        if !p.is_low() || (p.issues.contains(&Issue::Joined) && !oversized) {
             out.push(p);
             continue;
         }
@@ -94,11 +103,17 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
     // A fragment next to a panel belongs to it (a title over a splash, a sliver of a frame).
     let reach = 0.03 * pw.max(ph) as f32;
     for f in fragments {
+        // Merging must not make a panel swallow its neighbours: the box of a title merged into
+        // a narrow panel can span a whole row.
+        let swallows = |i: usize| {
+            let u = union(&out[i].rect, &f.rect);
+            out.iter().enumerate().any(|(j, o)| j != i && o.rect.overlap_area(&u) * 5 > o.rect.area())
+        };
         let nearest = out
             .iter()
             .enumerate()
             .map(|(i, p)| (i, gap(&f.rect, &p.rect)))
-            .filter(|&(_, d)| d <= reach)
+            .filter(|&(i, d)| d <= reach && !swallows(i))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         match nearest {
             Some((i, _)) => {
@@ -279,17 +294,28 @@ fn find_cut(page: &Page, r: &Region, horizontal: bool) -> Option<Cut> {
         }
         let full = |c: usize| n[c] as f32 >= 0.6 * len_t as f32;
         let dark_frac = |c: usize| if full(c) { dark[c] as f32 / n[c] as f32 } else { 0.0 };
+        let paper_frac = |c: usize| if full(c) { paper[c] as f32 / n[c] as f32 } else { 1.0 };
         for c in margin.max(max_gap)..len_u.saturating_sub(margin.max(max_gap)) {
             if !full(c) {
                 continue;
             }
             let p = paper[c] as f32 / n[c] as f32;
-            if p < 0.9 {
+            if p < CROSSED_PAPER {
+                // Or a single black frame line between the panels, with no white gap.
+                if let Some(score) = black_line(c, len_u, &dark_frac, &paper_frac, max_gap) {
+                    if best.is_none_or(|b| score > b.score) {
+                        best = Some(Cut { horizontal, slope, offset: c as f32, score });
+                    }
+                }
                 continue;
             }
             let above = (1..=max_gap).map(|d| dark_frac(c - d)).fold(0.0, f32::max);
             let below = (1..=max_gap).map(|d| dark_frac(c + d)).fold(0.0, f32::max);
-            if above < 0.45 || below < 0.45 {
+            // A clean gutter needs some border on both sides; one crossed by art (a rifle, a
+            // balloon) needs the two long, parallel frame lines that make a gutter a gutter.
+            let clean = p >= 0.9 && above >= 0.45 && below >= 0.45;
+            let crossed = above >= CROSSED_BORDER && below >= CROSSED_BORDER;
+            if !clean && !crossed {
                 continue;
             }
             let score = p + 0.5 * (above + below) / 2.0;
@@ -299,6 +325,45 @@ fn find_cut(page: &Page, r: &Region, horizontal: bool) -> Option<Cut> {
         }
     }
     best
+}
+
+/// A gutter drawn as one thick black line: line `c` is the middle of a band of at most
+/// `max_gap` lines that are each at least `BLACK_LINE` dark, with clearly lighter lines on both
+/// sides. Neither side may be nearly all paper: that is the border of a caption box, with the
+/// caption's blank interior on one side. Returns the cut's score.
+fn black_line(
+    c: usize,
+    len: usize,
+    dark: &impl Fn(usize) -> f32,
+    paper: &impl Fn(usize) -> f32,
+    max_gap: usize,
+) -> Option<f32> {
+    // Every line looked at (the band and max_gap lines past it) must exist.
+    if c < 2 * max_gap + 2 || c + 2 * max_gap + 2 >= len {
+        return None;
+    }
+    let d = dark(c);
+    if d < BLACK_LINE {
+        return None;
+    }
+    let (mut lo, mut hi) = (c, c);
+    while lo > 0 && c - lo <= max_gap && dark(lo - 1) >= BLACK_LINE {
+        lo -= 1;
+    }
+    while c.abs_diff(hi) <= max_gap && dark(hi + 1) >= BLACK_LINE {
+        hi += 1;
+    }
+    // Only the band's middle line is a candidate, and the band must be thin.
+    if hi - lo > max_gap || c != (lo + hi) / 2 || lo < max_gap {
+        return None;
+    }
+    let side = |line: usize| paper(line) >= 0.8;
+    if (2..=max_gap).any(|off| side(lo - off) || side(hi + off)) {
+        return None;
+    }
+    let outside = |off: usize| dark(lo - off).max(dark(hi + off));
+    let lighter = (2..=max_gap).map(outside).fold(1.0, f32::min);
+    (lighter < 0.6).then_some(d + 0.5 * (1.0 - lighter))
 }
 
 fn gap(a: &Rect, b: &Rect) -> f32 {
@@ -361,5 +426,27 @@ mod tests {
         let p = Panel::new(Rect { x: 38, y: 38, w: w - 76, h: h - 76 }, None, vec![Issue::InnerGutter]);
         let (panels, stats) = refine_page(&img, vec![p], false, 0.0);
         assert_eq!((panels.len(), stats.split), (1, 0));
+    }
+
+    // Regression (Blazing 4 p. 7, 8): panels separated by one thick black line and no white
+    // gutter are split along it.
+    #[test]
+    fn splits_along_black_frame_line() {
+        let (w, h) = (600u32, 800u32);
+        let mut g = GrayImage::from_pixel(w, h, Luma([240]));
+        for y in 40..h - 40 {
+            for x in 40..w - 40 {
+                let line = (396..410).contains(&y);
+                let border = x < 46 || x >= w - 46 || y < 46 || y >= h - 46;
+                // Art: busy mid tones, never mostly paper.
+                let art = 90 + ((x * 7 + y * 3) % 60) as u8;
+                g.put_pixel(x, y, Luma([if line || border { 10 } else { art }]));
+            }
+        }
+        let img = DynamicImage::ImageLuma8(g);
+        let merged = Panel::new(Rect { x: 38, y: 38, w: w - 76, h: h - 76 }, None, vec![Issue::Large]);
+        let (panels, stats) = refine_page(&img, vec![merged], false, 0.0);
+        assert_eq!((panels.len(), stats.split), (2, 1), "{panels:?}");
+        assert!(panels[0].rect.bottom() <= 420 && panels[1].rect.y >= 390, "{panels:?}");
     }
 }

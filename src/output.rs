@@ -1,6 +1,6 @@
 //! Render packed pages and write PDF / CBZ / image folders.
 
-use crate::detect::Shape;
+use crate::detect::{Rect, Shape};
 use crate::layout::OutPage;
 use crate::ocr::PlacedWord;
 use anyhow::{Context, Result};
@@ -60,6 +60,14 @@ pub fn auto_levels(img: &DynamicImage) -> Option<(u8, u8)> {
     (white >= 150 && white as i32 - black as i32 >= 96 && (black > 0 || white < 255)).then_some((black, white))
 }
 
+fn overlaps(a: &Rect, b: &Rect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+fn contains(r: &Rect, x: f32, y: f32) -> bool {
+    x >= r.x as f32 && y >= r.y as f32 && x < r.right() as f32 && y < r.bottom() as f32
+}
+
 /// Stretch `[black, white]` to the full range.
 fn apply_levels(tile: &mut RgbImage, (black, white): (u8, u8)) {
     let span = (white - black) as f32;
@@ -79,11 +87,13 @@ pub fn load_image(path: &Path) -> Result<DynamicImage> {
 }
 
 /// Compose one Kindle page and return it JPEG-encoded.
-/// `shapes[page][panel]` is the exact outline of a non-rectangular panel, and `levels[page]`
-/// the black and white points of a source page (see `auto_levels`).
+/// `rects[page][panel]` is a panel's box and `shapes[page][panel]` the exact outline of a
+/// non-rectangular panel; `levels[page]` holds the black and white points of a source page
+/// (see `auto_levels`).
 pub fn render_page(
     page: &OutPage,
     sources: &[PathBuf],
+    rects: &[Vec<Rect>],
     shapes: &[Vec<Option<Shape>>],
     levels: &[Option<(u8, u8)>],
     o: &RenderOptions,
@@ -101,13 +111,39 @@ pub fn render_page(
         if let Some(l) = levels[it.page] {
             apply_levels(&mut tile, l);
         }
-        if let Some(shape) = it.panel.and_then(|i| shapes[it.page][i].as_ref()) {
-            // Paint everything outside the panel's outline white.
-            let (sx, sy) = (it.src.w as f32 / rw as f32, it.src.h as f32 / rh as f32);
-            for (x, y, p) in tile.enumerate_pixels_mut() {
-                let a = shape.alpha(it.src.x as f32 + (x as f32 + 0.5) * sx, it.src.y as f32 + (y as f32 + 0.5) * sy);
-                if a < 1.0 {
-                    p.0 = p.0.map(|c| (c as f32 * a + 255.0 * (1.0 - a)).round() as u8);
+        if let Some(i) = it.panel {
+            let shape = shapes[it.page][i].as_ref();
+            // Neighbours whose outline reaches into this panel's box: on slanted layouts the
+            // outlines (convex hulls) overlap, and the overlap must not show in both panels.
+            // Only outlines settle overlaps: rectangular boxes may overlap where a caption or a
+            // balloon was joined to one of them, and that text must show in full.
+            let neighbours: Vec<usize> = (0..rects[it.page].len())
+                .filter(|&j| j != i && overlaps(&rects[it.page][j], &it.src))
+                .filter(|&j| shape.is_some() || shapes[it.page][j].is_some())
+                .collect();
+            if shape.is_some() || !neighbours.is_empty() {
+                let centre = |r: &Rect| (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
+                let dist = |(cx, cy): (f32, f32), x: f32, y: f32| (x - cx).powi(2) + (y - cy).powi(2);
+                let own = centre(&rects[it.page][i]);
+                let (sx, sy) = (it.src.w as f32 / rw as f32, it.src.h as f32 / rh as f32);
+                for (x, y, p) in tile.enumerate_pixels_mut() {
+                    let (px, py) = (it.src.x as f32 + (x as f32 + 0.5) * sx, it.src.y as f32 + (y as f32 + 0.5) * sy);
+                    let mut a = shape.map_or(1.0, |s| s.alpha(px, py));
+                    // A rectangular box (tight around its art or caption) keeps all of it, and an
+                    // outline loses what lies in such a box. Where two outlines overlap, a point
+                    // belongs to the panel with the nearer centre.
+                    if a > 0.0
+                        && shape.is_some()
+                        && neighbours.iter().any(|&j| match &shapes[it.page][j] {
+                            None => contains(&rects[it.page][j], px, py),
+                            Some(s) => s.alpha(px, py) > 0.5 && dist(centre(&rects[it.page][j]), px, py) < dist(own, px, py),
+                        })
+                    {
+                        a = 0.0;
+                    }
+                    if a < 1.0 {
+                        p.0 = p.0.map(|c| (c as f32 * a + 255.0 * (1.0 - a)).round() as u8);
+                    }
                 }
             }
         }

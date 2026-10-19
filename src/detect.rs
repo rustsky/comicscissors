@@ -99,6 +99,9 @@ pub enum Issue {
     /// Produced or re-checked by the second round (split along a gutter, merged,
     /// or searched for a gutter at full resolution and none found).
     Refined,
+    /// Grown by, or made of, ink outside the detected panels (a caption, a title, a
+    /// borderless panel). The second round leaves it as it is.
+    Joined,
 }
 
 impl Issue {
@@ -112,6 +115,7 @@ impl Issue {
             Issue::Large => 0.55,
             Issue::Oversized => 0.55,
             Issue::Refined => 1.0,
+            Issue::Joined => 1.0,
         }
     }
 
@@ -125,6 +129,7 @@ impl Issue {
             Issue::Large => "bigger than usual",
             Issue::Oversized => "much bigger than usual",
             Issue::Refined => "re-checked in second round",
+            Issue::Joined => "joined with nearby text",
         }
     }
 }
@@ -297,7 +302,13 @@ impl Mask {
     /// Square-kernel dilation (`erode = false`) or erosion (`erode = true`) of radius `r`.
     /// Separable, using running counts. Outside the mask counts as set when eroding.
     fn morph(&self, r: usize, erode: bool) -> Mask {
+        self.morph_xy(r, r, erode)
+    }
+
+    /// `morph` with separate horizontal and vertical radii.
+    fn morph_xy(&self, rx: usize, ry: usize, erode: bool) -> Mask {
         let pass = |src: &Mask, horizontal: bool| -> Mask {
+            let r = if horizontal { rx } else { ry };
             let (len, lines) = if horizontal { (src.w, src.h) } else { (src.h, src.w) };
             let idx = |line: usize, i: usize| if horizontal { line * src.w + i } else { i * src.w + line };
             let mut out = Mask::new(src.w, src.h);
@@ -317,6 +328,9 @@ impl Mask {
         pass(&pass(self, true), false)
     }
 }
+
+/// Share of the page's ink outside all panels above which the page is kept whole.
+const UNCOVERED_INK: f32 = 0.3;
 
 pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
     let (ow, oh) = (img.width(), img.height());
@@ -394,7 +408,7 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
             let raw = m.morph(1, false);
             let raw_count = raw.data.iter().filter(|&&b| b).count();
             let m = raw.convex_fill();
-            panels.push(Cand { r: Rect { x: r.x + x0 as u32, y: r.y + y0 as u32, ..r }, m, raw_count, was_split });
+            panels.push(Cand { r: Rect { x: r.x + x0 as u32, y: r.y + y0 as u32, ..r }, m, raw_count, was_split, joined: false });
         }
     }
 
@@ -403,6 +417,37 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
     // Drop boxes that sit mostly inside a bigger one (insets, stray balloons).
     let all: Vec<Rect> = panels.iter().map(|c| c.r).collect();
     panels.retain(|c| !all.iter().any(|b| b.area() > c.r.area() && c.r.overlap_area(b) * 10 >= c.r.area() * 8));
+    // Pages of unframed pictures (gag cartoons, illustrated text, ads): cutting out the
+    // drawings splits figures and their captions apart. Keep the whole page instead.
+    let frameless = panels.iter().filter(|c| score(c, &ink, &paper, w, h).contains(&Issue::NoBorder)).count();
+    if panels.len() >= 2 && frameless * 2 >= panels.len() {
+        return vec![full];
+    }
+    // Pages without a panel layout (ads, a logo over a collage, pin-ups): when most candidates
+    // have no drawn frame, they are pieces of one picture, not panels. Keep the page whole.
+    let frameless = panels.iter().filter(|c| score(c, &ink, &paper, w, h).contains(&Issue::NoBorder)).count();
+    if panels.len() >= 2 && frameless * 2 > panels.len() {
+        return vec![full];
+    }
+    // Text pages (prose stories, editorials, ads): when much of the ink lies outside every
+    // panel, cutting out the panels would drop the text. Keep the whole page instead.
+    let total_ink = ink.data.iter().filter(|&&b| b).count();
+    let outside = (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            ink.at(x, y)
+                && !panels.iter().any(|c| {
+                    let (x, y) = (x as u32, y as u32);
+                    x >= c.r.x && y >= c.r.y && x < c.r.right() && y < c.r.bottom()
+                })
+        })
+        .count();
+    if total_ink > 0 && outside as f32 > UNCOVERED_INK * total_ink as f32 {
+        return vec![full];
+    }
+    attach_stray_ink(&mut panels, &ink);
+    // A box grown over the pieces of a borderless panel (figures found on their own) takes them in.
+    merge_overlapping(&mut panels);
     let panels = reading_order(panels, |c| c.r, o.rtl);
 
     let pad = (ow.min(oh) as f32 * o.padding).round() as i64;
@@ -434,10 +479,300 @@ struct Cand {
     /// Pixels of the blob itself before the convex fill.
     raw_count: usize,
     was_split: bool,
+    /// Grown by or made of stray ink (see [`attach_stray_ink`]).
+    joined: bool,
+}
+
+/// A box grown over stray ink that now overlaps another box by over half of the smaller one
+/// covers one picture with it (the figures of a borderless panel), as in Kumiko's panel merging:
+/// replace them by their union. Framed panels are never merged with each other: the boxes of
+/// slanted panels overlap a lot.
+fn merge_overlapping(panels: &mut Vec<Cand>) {
+    loop {
+        let pair = (0..panels.len()).flat_map(|i| (i + 1..panels.len()).map(move |j| (i, j))).find(|&(i, j)| {
+            let (a, b) = (&panels[i].r, &panels[j].r);
+            (panels[i].joined || panels[j].joined) && a.overlap_area(b) * 2 > a.area().min(b.area())
+        });
+        let Some((i, j)) = pair else { return };
+        let (a, b) = (panels[i].r, panels[j].r);
+        let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+        let r = Rect { x, y, w: a.right().max(b.right()) - x, h: a.bottom().max(b.bottom()) - y };
+        let mut m = Mask::new(r.w as usize, r.h as usize);
+        m.data.fill(true);
+        let was_split = panels[i].was_split || panels[j].was_split;
+        panels.remove(j);
+        panels[i] = Cand { r, raw_count: m.data.len(), m, was_split, joined: true };
+    }
+}
+
+/// Ink outside every panel (a caption under a gag cartoon, the caption or art of a borderless
+/// panel, a title) is given to a panel by partitioning the page into cells, as in Kumiko's panel
+/// expansion: each panel's box grows in every direction to the middle of the gap to its nearest
+/// neighbour that way, or to the page edge. Ink is grouped into blocks (letters into words, close
+/// lines into paragraphs), and each block joins the panel whose cell holds its centre. A block
+/// that would make that panel overlap another one (a title over two columns) becomes a panel of
+/// its own. Running heads and page numbers, thin lines at the very top or bottom, are left out.
+fn attach_stray_ink(panels: &mut Vec<Cand>, ink: &Mask) {
+    let (w, h) = (ink.w, ink.h);
+    if panels.is_empty() {
+        return;
+    }
+    // Inside a panel's outline, not just its box: ink in the corner a slanted outline cuts off
+    // (a caption beside a diagonal border) would otherwise be painted white.
+    let inside = |c: &Cand, x: usize, y: usize| {
+        let (xu, yu) = (x as u32, y as u32);
+        xu >= c.r.x
+            && yu >= c.r.y
+            && xu < c.r.right()
+            && yu < c.r.bottom()
+            && c.m.at(x - c.r.x as usize, y - c.r.y as usize)
+    };
+    // The band along the image border is left out, so scan shadow there does not join up
+    // with a caption near the edge.
+    let band = (w.max(h) / 100).max(2);
+    let mut stray = Mask::new(w, h);
+    for y in band..h - band {
+        for x in band..w - band {
+            stray.data[y * w + x] = ink.at(x, y) && !panels.iter().any(|c| inside(c, x, y));
+        }
+    }
+    // Letters into words and lines into blocks; each block's box is that of its own ink.
+    // Vertically only close lines merge: a running head sits further from the caption below it.
+    let reach_px = (w.max(h) / 80).max(3);
+    let (labels, merged) = label(&stray.morph_xy(reach_px, (reach_px / 6).max(1), false));
+    let mut groups: Vec<Option<Rect>> = vec![None; merged.len()];
+    for y in 0..h {
+        for x in 0..w {
+            if !stray.at(x, y) {
+                continue;
+            }
+            let g = &mut groups[labels[y * w + x] as usize - 1];
+            let (x, y) = (x as u32, y as u32);
+            *g = Some(match *g {
+                None => Rect { x, y, w: 1, h: 1 },
+                Some(r) => {
+                    let (x0, y0) = (r.x.min(x), r.y.min(y));
+                    Rect { x: x0, y: y0, w: r.right().max(x + 1) - x0, h: r.bottom().max(y + 1) - y0 }
+                }
+            });
+        }
+    }
+    let detected: Vec<Rect> = panels.iter().map(|c| c.r).collect();
+    let cells = cells(&detected, w as u32, h as u32);
+    // Each group's ink per cell: how much of it falls in the cell, and the box of that part.
+    let n = panels.len();
+    let mut share: Vec<(usize, Option<Rect>)> = vec![(0, None); groups.len() * n];
+    for y in 0..h {
+        for x in 0..w {
+            if !stray.at(x, y) {
+                continue;
+            }
+            let k = labels[y * w + x] as usize - 1;
+            let (x, y) = (x as u32, y as u32);
+            for (i, c) in cells.iter().enumerate() {
+                if x >= c.x && y >= c.y && x < c.right() && y < c.bottom() {
+                    let (count, b) = &mut share[k * n + i];
+                    *count += 1;
+                    *b = Some(match *b {
+                        None => Rect { x, y, w: 1, h: 1 },
+                        Some(r) => {
+                            let (x0, y0) = (r.x.min(x), r.y.min(y));
+                            Rect { x: x0, y: y0, w: r.right().max(x + 1) - x0, h: r.bottom().max(y + 1) - y0 }
+                        }
+                    });
+                }
+            }
+        }
+    }
+    let margin = (w.max(h) / 100) as u32;
+    let union = |a: &Rect, b: &Rect| {
+        let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+        Rect { x, y, w: a.right().max(b.right()) - x, h: a.bottom().max(b.bottom()) - y }
+    };
+
+    let mut grown: Vec<Option<Rect>> = vec![None; n];
+    let mut own: Vec<Rect> = Vec::new();
+    for (k, g) in groups.iter().enumerate() {
+        let Some(g) = *g else { continue };
+        // Specks, and thin ink along a box (its border line).
+        // Stray ink touching the image border is never a caption: it is scan shadow, the stack of
+        // page edges or the table beside a photographed book (art reaching the border is inside a
+        // panel already).
+        let at_border = g.x <= margin || g.y <= margin || g.right() + margin >= w as u32 || g.bottom() + margin >= h as u32;
+        // The stack of page edges beside or below a photographed book lies a little inside the
+        // image border: a tall thin column near a side, or a page-wide band near the top or bottom.
+        let (fw, fh) = (w as f32, h as f32);
+        let edge_column = (g.w as f32) < 0.16 * fw
+            && g.h > 3 * g.w
+            && ((g.x as f32) < 0.1 * fw || g.right() as f32 > 0.9 * fw);
+        let edge_band = (g.w as f32) > 0.8 * fw
+            && (g.h as f32) < 0.12 * fh
+            && ((g.y as f32) < 0.06 * fh || g.bottom() as f32 > 0.94 * fh);
+        let at_border = at_border || edge_column || edge_band;
+        // (A border line is thinner than a line of lettering.)
+        let hugs = (g.w <= margin || g.h <= margin)
+            && detected.iter().any(|r| {
+                g.x + margin >= r.x && g.y + margin >= r.y && g.right() <= r.right() + margin && g.bottom() <= r.bottom() + margin
+            });
+        // A running head lies above every panel or is a short line centred on the page; a page
+        // number is a short line below every panel. A caption under the last row is longer.
+        let thin_line = (g.h as usize) < h / 25;
+        let at_end = (g.y as usize) < h * 8 / 100 || g.bottom() as usize > h - h * 8 / 100;
+        // (A panel's top edge may sit a little higher than the head's baseline.)
+        let above_all = detected.iter().all(|r| g.bottom() <= r.y + r.h / 20);
+        let below_all = detected.iter().all(|r| g.y + r.h / 20 >= r.bottom()) && (g.w as usize) < w * 8 / 100;
+        let centred = (g.x as i64 + g.w as i64 / 2 - w as i64 / 2).unsigned_abs() < w as u64 / 10
+            && (g.w as usize) < w * 4 / 10;
+        let head = thin_line && at_end && (above_all || below_all || centred);
+        if g.area() < (w * h) as u64 / 2000 || at_border || hugs || head {
+            continue;
+        }
+        // The part in the cell holding most of the group's ink joins that panel, when that is
+        // nearly all of it. A group spread over several cells (a title over two columns) is a
+        // panel of its own, and so is one whose part would make its panel overlap another.
+        let ink_count = stray_count(&stray, &labels, k, &g);
+        // Cells holding nearly all of it, nearest panel first (cells overlap where panels are
+        // staggered); the first one it can join without its panel covering another wins.
+        let gap = |r: &Rect| {
+            let dx = (g.x as i64 - r.right() as i64).max(r.x as i64 - g.right() as i64).max(0) as f32;
+            let dy = (g.y as i64 - r.bottom() as i64).max(r.y as i64 - g.bottom() as i64).max(0) as f32;
+            dx.hypot(dy)
+        };
+        let mut owners: Vec<usize> = (0..n).filter(|&i| share[k * n + i].0 * 10 >= ink_count * 8).collect();
+        owners.sort_by(|&a, &b| gap(&detected[a]).total_cmp(&gap(&detected[b])));
+        // A caption on a panel's frame, split between two cells: the panel it touches, then the
+        // cell holding most of it.
+        // (A few lines of lettering at most: a taller block is a borderless panel.)
+        let on_frame = owners.is_empty() && (g.h as usize) < h / 12;
+        if on_frame {
+            let mut touching: Vec<usize> = (0..n).filter(|&i| gap(&detected[i]) <= margin as f32).collect();
+            touching.sort_by_key(|&i| std::cmp::Reverse(share[k * n + i].0));
+            owners = touching;
+        }
+        let mut placed = false;
+        for i in owners {
+            let Some(part) = share[k * n + i].1 else { continue };
+            let base = grown[i].unwrap_or(detected[i]);
+            // On the frame, the panel only grows up or down to the caption, keeping its width.
+            // (All of the caption's lines: the top one may lie in the cell above.)
+            let part = if on_frame { Rect { x: base.x, y: g.y, w: base.w, h: g.h } } else { part };
+            let u = union(&base, &part);
+            // Only overlap the growth adds counts: staggered panels can overlap from the start.
+            let covers = detected.iter().enumerate().any(|(j, r)| {
+                j != i && (r.overlap_area(&u) - r.overlap_area(&detected[i])) * 10 > r.area()
+            });
+            if !covers {
+                grown[i] = Some(u);
+                placed = true;
+                break;
+            }
+        }
+        // Too small to show on its own (a scrap of art cut off by a split): it joins the nearest
+        // panel, which may then overlap a neighbour a little.
+        if !placed && (g.area() as f32) < 0.02 * (w * h) as f32 {
+            if let Some(i) = (0..n).min_by(|&a, &b| gap(&detected[a]).total_cmp(&gap(&detected[b]))) {
+                grown[i] = Some(union(&grown[i].unwrap_or(detected[i]), &g));
+                placed = true;
+            }
+        }
+        // A block of its own must stand apart from the panels (a title between rows); one that
+        // overlaps them is a mix of their edges and margins.
+        // Boxes mostly inside it are the pieces of a borderless panel (figures found on their
+        // own) and are taken in; the rest may barely overlap it.
+        let inside = |r: &Rect| r.overlap_area(&g) * 10 >= r.area() * 8;
+        let overlap: u64 = detected.iter().filter(|r| !inside(r)).map(|r| r.overlap_area(&g)).sum();
+        if !placed && overlap * 4 < g.area() {
+            own.push(g);
+        }
+    }
+    for (c, r) in panels.iter_mut().zip(grown) {
+        if let Some(r) = r {
+            // The grown box is cropped as a rectangle: its old outline no longer covers it.
+            let mut m = Mask::new(r.w as usize, r.h as usize);
+            m.data.fill(true);
+            *c = Cand { r, raw_count: m.data.len(), m, was_split: c.was_split, joined: true };
+        }
+    }
+    for r in own {
+        let r = grow_over_ink(r, ink);
+        panels.retain(|c| c.r.overlap_area(&r) * 10 < c.r.area() * 8);
+        let mut m = Mask::new(r.w as usize, r.h as usize);
+        m.data.fill(true);
+        panels.push(Cand { r, raw_count: m.data.len(), m, was_split: false, joined: true });
+    }
+}
+
+/// Ink pixels of group `k` (labels are 1-based) inside its box `g`.
+fn stray_count(stray: &Mask, labels: &[u32], k: usize, g: &Rect) -> usize {
+    (g.y as usize..g.bottom() as usize)
+        .map(|y| {
+            (g.x as usize..g.right() as usize).filter(|&x| stray.at(x, y) && labels[y * stray.w + x] as usize == k + 1).count()
+        })
+        .sum()
+}
+
+/// Grow a text block's box sideways while the strip just outside it still holds ink (letters
+/// that a neighbour's outline reached over), until a blank gap, by at most a quarter of its width.
+fn grow_over_ink(mut r: Rect, ink: &Mask) -> Rect {
+    let step = (ink.w.max(ink.h) / 200).max(1) as u32;
+    let limit = r.w / 4;
+    let (y0, y1) = (r.y, r.bottom());
+    let has_ink = |x0: u32, x1: u32| (y0..y1).any(|y| (x0..x1).any(|x| ink.at(x as usize, y as usize)));
+    let mut grown = 0;
+    while grown < limit && r.right() + step <= ink.w as u32 && has_ink(r.right(), r.right() + step) {
+        r.w += step;
+        grown += step;
+    }
+    let mut grown = 0;
+    while grown < limit && r.x >= step && has_ink(r.x - step, r.x) {
+        r.x -= step;
+        r.w += step;
+        grown += step;
+    }
+    r
+}
+
+/// Each box grown in every direction to the middle of the gap to its nearest neighbour that way
+/// (one overlapping it across that direction), or to the page edge when there is none.
+fn cells(boxes: &[Rect], w: u32, h: u32) -> Vec<Rect> {
+    let spans = |a0: u32, a1: u32, b0: u32, b1: u32| a0.max(b0) < a1.min(b1);
+    boxes
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let others = || boxes.iter().enumerate().filter(move |&(j, _)| j != i).map(|(_, o)| o);
+            let left = others()
+                .filter(|o| spans(r.y, r.bottom(), o.y, o.bottom()) && o.right() <= r.x + r.w / 10)
+                .map(|o| (o.right().min(r.x) + r.x) / 2)
+                .max()
+                .unwrap_or(0);
+            let right = others()
+                .filter(|o| spans(r.y, r.bottom(), o.y, o.bottom()) && o.x + r.w / 10 >= r.right())
+                .map(|o| (o.x.max(r.right()) + r.right()) / 2)
+                .min()
+                .unwrap_or(w);
+            let top = others()
+                .filter(|o| spans(r.x, r.right(), o.x, o.right()) && o.bottom() <= r.y + r.h / 10)
+                .map(|o| (o.bottom().min(r.y) + r.y) / 2)
+                .max()
+                .unwrap_or(0);
+            let bottom = others()
+                .filter(|o| spans(r.x, r.right(), o.x, o.right()) && o.y + r.h / 10 >= r.bottom())
+                .map(|o| (o.y.max(r.bottom()) + r.bottom()) / 2)
+                .min()
+                .unwrap_or(h);
+            let (x0, y0) = (left.min(r.x), top.min(r.y));
+            Rect { x: x0, y: y0, w: right.max(r.right()) - x0, h: bottom.max(r.bottom()) - y0 }
+        })
+        .collect()
 }
 
 /// Page-local reasons to doubt a candidate. Book-level ones ([`Issue::Oversized`]) are added later.
 fn score(c: &Cand, ink: &Mask, paper: &Mask, page_w: usize, page_h: usize) -> Vec<Issue> {
+    // Its box was built around the ink itself: the outline checks do not apply.
+    if c.joined {
+        return vec![Issue::Joined];
+    }
     let mut issues = Vec::new();
     let hull = c.m.data.iter().filter(|&&b| b).count().max(1);
     if (c.raw_count as f32) < 0.88 * hull as f32 {
@@ -583,6 +918,68 @@ pub(crate) fn background_luma(g: &GrayImage) -> u8 {
         }
     }
     255
+}
+
+/// Drop narrow strips lying outside the grid of the other panels, beside or below all of them,
+/// close to the page edge and without a clean drawn border: the stack of page edges, a book
+/// cover or the table in a photo of an open book. Title strips are kept: a row is dropped only
+/// when it is very thin.
+pub fn drop_edge_strips(panels: &mut Vec<Panel>, page_w: u32, page_h: u32) {
+    // A thin strip along the image border is the stack of page edges or scan shadow, never a
+    // panel: a narrow column near the left or right side, or a low band near the top or bottom.
+    // A doubtful column (notched, borderless, or made of stray ink) may be wider: the stack of
+    // page edges beside a photographed book.
+    let thin_at_border = |p: &Panel| {
+        let r = &p.rect;
+        let (w, h) = (page_w as f32, page_h as f32);
+        let unsure = p.confidence < 1.0 || p.issues.contains(&Issue::Joined);
+        let limit = if unsure { 0.16 } else { 0.12 };
+        let column = (r.w as f32) < limit * w
+            && r.h > 2 * r.w
+            && ((r.x as f32) < 0.1 * w || r.right() as f32 > 0.9 * w);
+        // (A page-edge band spans the page; a title strip does not.)
+        let band = (r.h as f32) < 0.08 * h
+            && (r.w as f32) > 0.85 * w
+            && ((r.y as f32) < 0.06 * h || r.bottom() as f32 > 0.94 * h);
+        column || band
+    };
+    if panels.len() > 1 {
+        panels.retain(|p| !thin_at_border(p));
+    }
+    if panels.len() < 3 {
+        return;
+    }
+    let median = |f: fn(&Rect) -> u32| {
+        let mut v: Vec<u32> = panels.iter().map(|p| f(&p.rect)).collect();
+        v.sort_unstable();
+        v[v.len() / 2]
+    };
+    let (mw, mh) = (median(|r| r.w), median(|r| r.h));
+    let rects: Vec<Rect> = panels.iter().map(|p| p.rect).collect();
+    let mut i = 0;
+    panels.retain(|p| {
+        let k = i;
+        i += 1;
+        let r = p.rect;
+        if !p.issues.iter().any(|i| matches!(i, Issue::Notched | Issue::NoBorder | Issue::Small)) {
+            return true;
+        }
+        let others = rects.iter().enumerate().filter(|&(j, _)| j != k).map(|(_, o)| o);
+        // Beside every other panel: no horizontal overlap beyond a sliver of the strip.
+        let tol_x = r.w / 5;
+        let beside = others.clone().all(|o| r.x + tol_x >= o.right() || r.right() <= o.x + tol_x);
+        let tol_y = r.h / 5;
+        let below_or_above = others.clone().all(|o| r.y + tol_y >= o.bottom() || r.bottom() <= o.y + tol_y);
+        let near_side = r.x < page_w / 12 || r.right() > page_w - page_w / 12;
+        let near_end = r.y < page_h / 25 || r.bottom() > page_h - page_h / 25;
+        let thin_column = beside && near_side && (r.w as f32) < 0.3 * mw as f32 && r.h > 2 * r.w;
+        let thin_row = below_or_above
+            && near_end
+            && p.issues.contains(&Issue::Small)
+            && (r.h as f32) < 0.15 * mh as f32
+            && r.w > 4 * r.h;
+        !(thin_column || thin_row)
+    });
 }
 
 /// Everything that is not gutter. Gutter = paper reachable from the page edge, plus
@@ -876,6 +1273,55 @@ fn draw_label(img: &mut image::RgbImage, text: &str, cx: f32, cy: f32, k: f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stray_captions_join_their_cartoon_and_titles_stand_alone() {
+        let (w, h) = (400usize, 600usize);
+        let mut ink = Mask::new(w, h);
+        let mut fill = |x0: usize, y0: usize, x1: usize, y1: usize| {
+            for y in y0..y1 {
+                for x in (x0..x1).step_by(3) {
+                    ink.data[y * w + x] = true;
+                }
+            }
+        };
+        fill(40, 150, 360, 170); // a title line, far from the cartoons
+        fill(50, 300, 180, 312); // the caption under the left cartoon
+        fill(195, 585, 205, 592); // the page number
+        let cand = |x, y, cw, ch| {
+            let m = Mask { w: cw as usize, h: ch as usize, data: vec![true; (cw * ch) as usize] };
+            Cand { r: Rect { x, y, w: cw, h: ch }, raw_count: m.data.len(), m, was_split: false, joined: false }
+        };
+        let mut panels = vec![cand(40, 200, 150, 90), cand(220, 200, 150, 90)];
+        attach_stray_ink(&mut panels, &ink);
+        assert_eq!(panels.len(), 3, "the title is a panel of its own");
+        assert!(panels[0].r.bottom() >= 312, "the caption joined the left cartoon: {:?}", panels[0].r);
+        assert_eq!(panels[1].r, Rect { x: 220, y: 200, w: 150, h: 90 });
+        assert!(panels.iter().all(|c| c.r.bottom() < 585), "the page number is left out");
+    }
+
+    #[test]
+    fn edge_strips_outside_the_grid_are_dropped() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        let grid = || {
+            vec![
+                Panel::new(r(80, 280, 1480, 730), None, vec![]),
+                Panel::new(r(80, 1020, 1480, 730), None, vec![]),
+                Panel::new(r(80, 1770, 1480, 730), None, vec![]),
+            ]
+        };
+        // The stack of page edges beside the panels, near the page side.
+        let mut panels = grid();
+        panels.push(Panel::new(r(1670, 110, 300, 1400), None, vec![Issue::Notched]));
+        drop_edge_strips(&mut panels, 2100, 2800);
+        assert_eq!(panels.len(), 3);
+        // A clean narrow panel in the same place is art, and a title above the grid is kept.
+        let mut panels = grid();
+        panels.push(Panel::new(r(1670, 280, 300, 1400), None, vec![]));
+        panels.push(Panel::new(r(300, 40, 1000, 200), None, vec![Issue::NoBorder]));
+        drop_edge_strips(&mut panels, 2100, 2800);
+        assert_eq!(panels.len(), 5);
+    }
+
     use super::*;
     use image::{Luma, GrayImage};
 
@@ -950,5 +1396,112 @@ mod tests {
             detect_panels(&img, &opts(true)),
             &[(520, 50), (50, 50), (50, 500), (520, 950), (520, 1220), (50, 950)],
         );
+    }
+
+    /// Fill text-like strokes (short dark bars, like letters) into `g` over a box.
+    fn letters(g: &mut GrayImage, x0: u32, y0: u32, w: u32, h: u32) {
+        for y in y0..y0 + h {
+            for x in x0..x0 + w {
+                if (y - y0) % 30 < 14 && (x - x0) % 22 < 12 {
+                    g.put_pixel(x, y, Luma([0]));
+                }
+            }
+        }
+    }
+
+    fn with_panels(panels: &[(u32, u32, u32, u32)]) -> GrayImage {
+        page_with(panels).to_luma8()
+    }
+
+    // Regression (All-Negro p. 2, 28): a prose page with one small illustration is kept whole,
+    // not cut down to the picture.
+    #[test]
+    fn text_page_is_kept_whole() {
+        let mut g = with_panels(&[(350, 100, 300, 300)]);
+        letters(&mut g, 80, 480, 840, 900);
+        let p = detect_panels(&DynamicImage::ImageLuma8(g), &opts(false));
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].rect, Rect { x: 0, y: 0, w: 1000, h: 1500 });
+    }
+
+    // Regression (All-Negro p. 5, 8, 22, 33): a running head above the grid is not a panel and
+    // does not make the first panel grow up to it.
+    #[test]
+    fn running_head_is_left_out() {
+        let mut g = with_panels(&[(50, 150, 430, 600), (520, 150, 430, 600), (50, 800, 900, 600)]);
+        letters(&mut g, 380, 70, 240, 16);
+        let p = detect_panels(&DynamicImage::ImageLuma8(g), &opts(false));
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert!(p.iter().all(|p| p.rect.y >= 140), "{p:?}");
+    }
+
+    // Regression (All-Negro p. 41): a caption under a gag cartoon stays with that cartoon, and the
+    // cartoon beside it does not take it.
+    #[test]
+    fn caption_under_a_cartoon_joins_it() {
+        let mut g = with_panels(&[(50, 100, 400, 500), (550, 100, 400, 500), (50, 800, 900, 600)]);
+        letters(&mut g, 60, 630, 380, 44);
+        let p = detect_panels(&DynamicImage::ImageLuma8(g), &opts(false));
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert!(p[0].rect.bottom() >= 670, "caption joined the left cartoon: {:?}", p[0].rect);
+        assert!(p[1].rect.bottom() <= 610, "right cartoon unchanged: {:?}", p[1].rect);
+    }
+
+    // Regression (All-Negro p. 36, 50): caption lines between two rows are all kept, each whole
+    // inside one panel, so no text is lost or cut through.
+    #[test]
+    fn caption_between_rows_is_kept() {
+        let mut g = with_panels(&[(50, 50, 900, 500), (50, 900, 900, 550)]);
+        letters(&mut g, 60, 650, 880, 150);
+        let p = detect_panels(&DynamicImage::ImageLuma8(g), &opts(false));
+        for line in (650..800).step_by(30) {
+            let (top, bottom) = (line, line + 14);
+            assert!(
+                p.iter().any(|p| p.rect.y <= top && p.rect.bottom() >= bottom && p.rect.x <= 60 && p.rect.right() >= 940),
+                "caption line at {line} not whole in a panel: {p:?}"
+            );
+        }
+    }
+
+    // Regression (ブラック悪魔): the stack of page edges along the side of a photographed book
+    // is dropped, before and after the second round.
+    #[test]
+    fn page_edge_column_at_the_side_is_dropped() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        let mut panels = vec![
+            Panel::new(r(320, 280, 1480, 730), None, vec![]),
+            Panel::new(r(320, 1020, 1480, 730), None, vec![]),
+            Panel::new(r(1730, 250, 150, 2560), None, vec![Issue::Joined]),
+        ];
+        drop_edge_strips(&mut panels, 1880, 2820);
+        assert_eq!(panels.len(), 2);
+        // A real tall panel in the middle of the page stays.
+        let mut panels = vec![Panel::new(r(700, 100, 200, 2000), None, vec![]), Panel::new(r(100, 100, 500, 900), None, vec![])];
+        drop_edge_strips(&mut panels, 1880, 2820);
+        assert_eq!(panels.len(), 2);
+    }
+
+    // Each panel's cell reaches halfway to its neighbours and out to the page edge.
+    #[test]
+    fn cells_partition_the_page() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        let c = cells(&[r(100, 100, 300, 300), r(500, 100, 300, 300)], 900, 600);
+        assert_eq!(c[0], r(0, 0, 450, 600));
+        assert_eq!(c[1], r(450, 0, 450, 600));
+    }
+
+    // Regression (All-Negro p. 31): a caption block whose lines run on under a neighbour's
+    // slanted outline is widened to take in the rest of the lettering.
+    #[test]
+    fn caption_box_grows_over_its_lettering() {
+        let mut ink = Mask::new(400, 300);
+        for y in 50..120 {
+            for x in (20..260).filter(|x| x % 3 != 0) {
+                ink.data[y * 400 + x] = true;
+            }
+        }
+        let r = grow_over_ink(Rect { x: 20, y: 50, w: 200, h: 70 }, &ink);
+        assert!(r.right() >= 258 && r.right() <= 262, "{r:?}");
+        assert_eq!(r.x, 20);
     }
 }

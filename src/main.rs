@@ -7,6 +7,7 @@ mod ocr;
 mod output;
 mod progress;
 mod refine;
+mod spreads;
 mod webtoon;
 
 use anyhow::{Context, Result, bail};
@@ -112,6 +113,11 @@ struct Args {
     /// and show them at screen width. Chosen automatically for pages over 3x taller than wide.
     #[arg(long)]
     webtoon: bool,
+
+    /// Keep two-page spreads (landscape scans of an open book) whole instead of splitting them
+    /// at the centre gutter into two pages.
+    #[arg(long)]
+    keep_spreads: bool,
 
     /// Split the first page into panels too, instead of keeping it whole as the cover.
     #[arg(long)]
@@ -257,6 +263,12 @@ fn run() -> Result<()> {
         pb.finish_and_clear();
         println!("Webtoon: cut into {} piece(s) between panels", cut.paths.len());
         (pages, chapters) = (cut.paths, cut.chapters);
+    } else if !args.keep_spreads {
+        let (split, split_chapters, n) = spreads::split(&pages, &chapters, &tmp.path().join("spreads"), args.rtl)?;
+        if n > 0 {
+            println!("Split {n} two-page spread(s) into single pages");
+            (pages, chapters) = (split, split_chapters);
+        }
     }
 
     // 1. Detect panels on every page in parallel.
@@ -299,7 +311,9 @@ fn run() -> Result<()> {
                 let rect = detect::Rect { x: 0, y: 0, w: img.width(), h: img.height() };
                 vec![detect::Panel::new(rect, None, Vec::new())]
             } else {
-                detect::detect_panels(&img, &det)
+                let mut panels = detect::detect_panels(&img, &det);
+                detect::drop_edge_strips(&mut panels, img.width(), img.height());
+                panels
             };
             let words = match &ocr_lang {
                 Some(lang) => ocr::recognize(&img, lang).with_context(|| format!("OCR of {}", p.display()))?,
@@ -356,7 +370,7 @@ fn run() -> Result<()> {
 
     // Second round on pages with doubtful panels.
     if !args.no_refine && low_before > 0 {
-        let todo: Vec<usize> = (0..analysed.len()).filter(|&i| analysed[i].panels.iter().any(|p| p.is_low())).collect();
+        let todo: Vec<usize> = (0..analysed.len()).filter(|&i| std::env::var("CS_FORCE").is_ok() || analysed[i].panels.iter().any(|p| p.is_low())).collect();
         let pb = progress::bar("Refining", todo.len(), "pages");
         let results: Vec<(usize, Vec<detect::Panel>, refine::Stats)> = todo
             .par_iter()
@@ -371,6 +385,8 @@ fn run() -> Result<()> {
         let mut total = refine::Stats::default();
         for (i, panels, st) in results {
             analysed[i].panels = panels;
+            let (pw, ph) = (analysed[i].width, analysed[i].height);
+            detect::drop_edge_strips(&mut analysed[i].panels, pw, ph);
             total.split += st.split;
             total.pieces += st.pieces;
             total.merged += st.merged;
@@ -402,9 +418,11 @@ fn run() -> Result<()> {
     let mut shapes = Vec::new();
     let mut words = Vec::new();
     let mut levels = Vec::new();
+    let mut rects = Vec::new();
     let mut chapters = Vec::new();
     for a in analysed {
         levels.push(a.levels);
+        rects.push(a.panels.iter().map(|p| p.rect).collect::<Vec<_>>());
         chapters.push(a.chapter);
         sources.push(layout::SourcePage { width: a.width, height: a.height, fit_width: webtoon, panels: a.panels.iter().map(|p| p.rect).collect() });
         shapes.push(a.panels.into_iter().map(|p| p.shape).collect::<Vec<_>>());
@@ -442,7 +460,7 @@ fn run() -> Result<()> {
     let rendered: Vec<Vec<u8>> = out_pages
         .par_iter()
         .progress_with(pb.clone())
-        .map(|p| output::render_page(p, &pages, &shapes, &levels, &ro))
+        .map(|p| output::render_page(p, &pages, &rects, &shapes, &levels, &ro))
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
 

@@ -140,11 +140,19 @@ fn extract_with_tool(path: &Path, tmp: &Path, pb: &ProgressBar) -> Result<Pages>
     bail!("could not extract {} (install bsdtar, unar or 7z)", path.display())
 }
 
+/// Longest side of a typical rendered PDF page. Scans are often stored with a wrong size (a
+/// 48-inch page at 72 dpi); rendered at 300 dpi they would be 150-megapixel images.
+const MAX_RENDER_PX: f32 = 4000.0;
+
 /// Render PDF pages with MuPDF (`mutool`) or Poppler (`pdftoppm`).
 fn render_pdf(path: &Path, tmp: &Path, dpi: u32, pb: &ProgressBar) -> Result<Vec<PathBuf>> {
     let dir = tmp.join("pdf");
     fs::create_dir_all(&dir)?;
     let total = pdf_page_count(path);
+    let dpi = match pdf_page_side_pt(path) {
+        Some(side) => dpi.min((MAX_RENDER_PX * 72.0 / side) as u32).max(36),
+        None => dpi,
+    };
     let dpi = dpi.to_string();
     let mut mutool = Command::new("mutool");
     mutool.args(["draw", "-q", "-r", &dpi, "-o"]).arg(dir.join("p%05d.png")).arg(path);
@@ -162,6 +170,42 @@ fn render_pdf(path: &Path, tmp: &Path, dpi: u32, pb: &ProgressBar) -> Result<Vec
         }
     }
     images_in_dir(&dir)
+}
+
+/// Longest side of the median page in points, from `mutool pages` or `pdfinfo`; `None` if
+/// neither works. The median, not the largest: one two-page spread must not lower the
+/// resolution of every other page.
+fn pdf_page_side_pt(path: &Path) -> Option<f32> {
+    let median = |mut sides: Vec<f32>| -> Option<f32> {
+        sides.retain(|&s| s > 0.0);
+        sides.sort_by(f32::total_cmp);
+        sides.get(sides.len() / 2).copied()
+    };
+    let num = |s: &str, key: &str| -> Option<f32> {
+        let rest = &s[s.find(&format!(" {key}=\""))? + key.len() + 3..];
+        rest[..rest.find('"')?].parse().ok()
+    };
+    if let Ok(o) = Command::new("mutool").arg("pages").arg(path).output()
+        && o.status.success()
+    {
+        let sides = String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| l.trim_start().starts_with("<MediaBox"))
+            .filter_map(|l| Some((num(l, "r")? - num(l, "l")?).abs().max((num(l, "t")? - num(l, "b")?).abs())))
+            .collect();
+        if let Some(side) = median(sides) {
+            return Some(side);
+        }
+    }
+    let o = Command::new("pdfinfo").args(["-f", "1", "-l", "100000"]).arg(path).output().ok()?;
+    let sides = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|l| {
+            let size = l.split_once(" size:")?.1.trim().strip_suffix("pts")?.trim().split_once(" x ")?;
+            Some(size.0.trim().parse::<f32>().ok()?.max(size.1.trim().parse().ok()?))
+        })
+        .collect();
+    median(sides)
 }
 
 /// Page count from `mutool show` or `pdfinfo`; `None` if neither works.
