@@ -329,6 +329,9 @@ impl Mask {
     }
 }
 
+/// Candidates covering more of the page than this get a second look (see [`score`]).
+const LARGE_SHARE: f32 = 0.35;
+
 /// Share of the page's ink outside all panels above which the page is kept whole.
 const UNCOVERED_INK: f32 = 0.3;
 
@@ -774,6 +777,11 @@ fn score(c: &Cand, ink: &Mask, paper: &Mask, page_w: usize, page_h: usize) -> Ve
         return vec![Issue::Joined];
     }
     let mut issues = Vec::new();
+    // A candidate covering much of the page may be several panels whose gutters were not
+    // reached (frames touching the image edge enclose them): check it again.
+    if c.r.area() as f32 > LARGE_SHARE * (page_w * page_h) as f32 {
+        issues.push(Issue::Large);
+    }
     let hull = c.m.data.iter().filter(|&&b| b).count().max(1);
     if (c.raw_count as f32) < 0.88 * hull as f32 {
         issues.push(Issue::Notched);
