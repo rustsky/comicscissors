@@ -417,9 +417,22 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
 
     let min_area = (page_area * o.min_panel_area) as u64;
     panels.retain(|c| c.r.area() >= min_area && c.r.w as f32 >= 0.03 * w as f32 && c.r.h as f32 >= 0.03 * h as f32);
-    // Drop boxes that sit mostly inside a bigger one (insets, stray balloons).
+    // Drop boxes that sit mostly inside a bigger one (insets, stray balloons), first painting
+    // their rectangle into the host's mask: a host cut by its outline would otherwise blank
+    // out a whole panel it swallowed.
     let all: Vec<Rect> = panels.iter().map(|c| c.r).collect();
-    panels.retain(|c| !all.iter().any(|b| b.area() > c.r.area() && c.r.overlap_area(b) * 10 >= c.r.area() * 8));
+    let host = |r: &Rect| all.iter().position(|b| b.area() > r.area() && r.overlap_area(b) * 10 >= r.area() * 8);
+    for i in 0..panels.len() {
+        let Some(j) = host(&panels[i].r) else { continue };
+        let (inner, b) = (panels[i].r, panels[j].r);
+        let m = &mut panels[j].m;
+        for y in inner.y.max(b.y)..inner.bottom().min(b.bottom()) {
+            for x in inner.x.max(b.x)..inner.right().min(b.right()) {
+                m.data[(y - b.y) as usize * m.w + (x - b.x) as usize] = true;
+            }
+        }
+    }
+    panels.retain(|c| host(&c.r).is_none());
     // Pages of unframed pictures (gag cartoons, illustrated text, ads): cutting out the
     // drawings splits figures and their captions apart. Keep the whole page instead.
     let frameless = panels.iter().filter(|c| score(c, &ink, &paper, w, h).contains(&Issue::NoBorder)).count();
