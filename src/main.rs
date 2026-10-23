@@ -407,6 +407,7 @@ fn run() -> Result<()> {
         analysed.par_iter().enumerate().progress_with(pb.clone()).try_for_each(|(i, a)| -> Result<()> {
             let img = output::load_image(&a.path)?;
             detect::debug_image(&img, &a.panels).save(d.join(format!("page{:04}.jpg", i + 1)))?;
+            detect::debug_masks(img.width(), img.height(), &a.panels).save(d.join(format!("page{:04}_masks.png", i + 1)))?;
             Ok(())
         })?;
         pb.finish_and_clear();

@@ -1211,6 +1211,23 @@ pub(crate) fn reading_order<T: Clone>(boxes: Vec<T>, rect: fn(&T) -> Rect, rtl: 
     rows.into_iter().flatten().collect()
 }
 
+/// Which panel each page pixel belongs to: 0 for none, `i + 1` for panel `i` (its shape where it
+/// has one, else its rectangle; a later panel wins where two overlap). For scoring masks.
+pub fn debug_masks(w: u32, h: u32, panels: &[Panel]) -> image::GrayImage {
+    let mut out = image::GrayImage::new(w, h);
+    for (i, p) in panels.iter().enumerate() {
+        let r = p.rect;
+        for y in r.y..r.bottom().min(h) {
+            for x in r.x..(r.x + r.w).min(w) {
+                if p.shape.as_ref().is_none_or(|s| s.alpha(x as f32 + 0.5, y as f32 + 0.5) > 0.5) {
+                    out.put_pixel(x, y, image::Luma([(i + 1).min(255) as u8]));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Draw detected panels on a copy of the page: exact outlines and numbered badges in reading order.
 pub fn debug_image(img: &DynamicImage, panels: &[Panel]) -> image::RgbImage {
     let mut out = img.to_rgb8();
