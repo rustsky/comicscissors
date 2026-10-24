@@ -1,6 +1,6 @@
 [package]
 name = "comic-scissors"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Comic & manga panel splitter for e-readers: cuts out panels and repacks them so they are readable without zooming"
 repository = "https://github.com/rustsky/comicscissors"
