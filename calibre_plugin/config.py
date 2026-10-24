@@ -62,9 +62,19 @@ class ConfigWidget(QWidget):
 
         self.format = QComboBox(self)
         self.format.addItem('PDF (works on every e-reader)', 'pdf')
+        self.format.addItem('EPUB (Kobo, PocketBook, Tolino, Boox; Send to Kindle)', 'epub')
+        self.format.addItem('KEPUB (Kobo)', 'kepub')
+        self.format.addItem('AZW3 (Kindle over USB)', 'azw3')
         self.format.addItem('CBZ', 'cbz')
         self.format.setCurrentIndex(max(0, self.format.findData(prefs['format'])))
         form.addRow('Output format:', self.format)
+
+        self.quality = QSpinBox(self)
+        self.quality.setRange(30, 100)
+        self.quality.setValue(prefs['quality'])
+        self.quality.setToolTip('JPEG quality of the pages. Lower makes much smaller files;\n'
+                                'e-ink shows little difference down to about 70.')
+        form.addRow('Image quality:', self.quality)
 
         self.ocr = QCheckBox('Add text layer for dictionary lookup (PDF only, needs Tesseract)', self)
         self.ocr.setChecked(prefs['ocr'])
@@ -77,6 +87,24 @@ class ConfigWidget(QWidget):
         self.rtl = QCheckBox('Manga: read panels right to left', self)
         self.rtl.setChecked(prefs['rtl'])
         form.addRow(self.rtl)
+
+        self.webtoon = QCheckBox('Webtoon: vertical scroll comic (found automatically for very tall pages)', self)
+        self.webtoon.setToolTip('Joins the slices, cuts between panels at background gaps and shows them at screen width.')
+        self.webtoon.setChecked(prefs['webtoon'])
+        form.addRow(self.webtoon)
+
+        self.overview = QCheckBox('Show each original page whole before its panels', self)
+        self.overview.setChecked(prefs['overview'])
+        form.addRow(self.overview)
+
+        self.cover = QCheckBox('Keep the first page whole as the cover', self)
+        self.cover.setChecked(prefs['cover'])
+        form.addRow(self.cover)
+
+        self.auto_levels = QCheckBox('Auto contrast: white paper, black ink', self)
+        self.auto_levels.setToolTip('Stretches each page so grey or yellowed paper becomes white and faded ink black.')
+        self.auto_levels.setChecked(prefs['auto_levels'])
+        form.addRow(self.auto_levels)
 
         self.rect_crop = QCheckBox('Rectangle panels: crop each panel to its bounding box', self)
         self.rect_crop.setToolTip(
@@ -108,9 +136,14 @@ class ConfigWidget(QWidget):
         prefs['custom_ppi'] = self.screen_ppi.value()
         prefs['custom_color'] = self.screen_color.isChecked()
         prefs['format'] = self.format.currentData()
+        prefs['quality'] = self.quality.value()
         prefs['ocr'] = self.ocr.isChecked()
         prefs['lang'] = self.lang.text().strip() or 'en'
         prefs['rtl'] = self.rtl.isChecked()
+        prefs['overview'] = self.overview.isChecked()
+        prefs['webtoon'] = self.webtoon.isChecked()
+        prefs['cover'] = self.cover.isChecked()
+        prefs['auto_levels'] = self.auto_levels.isChecked()
         prefs['rect_crop'] = self.rect_crop.isChecked()
         prefs['extra_args'] = self.extra_args.text().strip()
         prefs['binary'] = self.binary.text().strip()

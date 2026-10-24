@@ -1,5 +1,6 @@
 # Push a tag matching Cargo.toml's version (e.g. v0.1.0) to build and publish a release.
-# Each platform gets one archive with the CLI and the Calibre plugin (which bundles the same binary).
+# Each platform gets one archive with the CLI and the Calibre plugin (which bundles the same binary),
+# plus one all-platform plugin zip for calibre's plugin index.
 # Run it by hand (workflow_dispatch) to only build the archives as workflow artifacts.
 name: Release
 
@@ -87,8 +88,33 @@ jobs:
           name: bundle-${{ matrix.platform }}
           path: dist/*
 
-  release:
+  # One plugin zip with every platform's binary, for calibre's plugin index (MobileRead takes a
+  # single zip per plugin). The plugin picks its binary at runtime.
+  calibre-plugin:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+      - name: Package
+        run: |
+          mkdir unpacked
+          for f in bundles/*.tar.gz; do tar xzf "$f" -C unpacked; done
+          for f in bundles/*.zip; do unzip -q "$f" -d unpacked; done
+          python3 scripts/package.py --universal \
+            linux-x86_64=$(ls unpacked/*-linux-x86_64/comic-scissors) \
+            macos-universal=$(ls unpacked/*-macos-universal/comic-scissors) \
+            windows-x86_64=$(ls unpacked/*-windows-x86_64/comic-scissors.exe)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calibre-plugin
+          path: dist/*
+
+  release:
+    needs: [build, calibre-plugin]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:

@@ -43,7 +43,7 @@ class ComicScissorsAction(InterfaceAction):
         if not ids:
             return error_dialog(self.gui, 'No comics selected', 'Select one or more comics first.', show=True)
         db = self.gui.current_db.new_api
-        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'extra_args')}
+        opts = {k: prefs[k] for k in ('device', 'custom_width', 'custom_height', 'custom_ppi', 'custom_color', 'format', 'lang', 'ocr', 'rtl', 'rect_crop', 'overview', 'webtoon', 'cover', 'auto_levels', 'quality', 'extra_args')}
         skipped = []
         for book_id in ids:
             title = db.field_for('title', book_id)
@@ -52,13 +52,16 @@ class ComicScissorsAction(InterfaceAction):
             if fmt is None:
                 skipped.append(title)
                 continue
+            # Written into the output's metadata, so the repacked file is titled like the book.
+            authors = [a for a in db.field_for('authors', book_id) if a != _('Unknown')]  # noqa: F821
+            book_opts = dict(opts, authors=' & '.join(authors))
             job = ThreadedJob(
                 'comic_scissors',
                 f'Repack for e-reader: {title}',
                 convert,
-                (db.format_abspath(book_id, fmt), fmt, title, opts),
+                (db.format_abspath(book_id, fmt), fmt, title, book_opts),
                 {},
-                partial(self.job_done, db, book_id, fmt, opts),
+                partial(self.job_done, db, book_id, fmt, book_opts),
                 max_concurrent_count=1,  # the CLI already uses every core
             )
             self.gui.job_manager.run_threaded_job(job)
@@ -90,7 +93,7 @@ class ComicScissorsAction(InterfaceAction):
             # The book's original file has this format: keep it, and save ours as a data file instead,
             # "data/Title - Author_repanel.pdf" (shown under Data files in Book details).
             stem = os.path.splitext(os.path.basename(existing))[0]
-            name = f'{stem}_repanel.{opts["format"]}'
+            name = f'{stem}_repanel.{runner.EXTENSIONS[opts["format"]]}'
             db.add_extra_files(book_id, {f'data/{name}': out})
             msg = f'The original {fmt} was kept; saved {name} to the book\'s data files'
         shutil.rmtree(os.path.dirname(out), ignore_errors=True)
@@ -116,10 +119,12 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
     else:
         inp = os.path.join(work, f'{name}.{fmt.lower()}')
         shutil.copyfile(src, inp)
-    out = os.path.join(work, f'{name}_repanel.{opts["format"]}')
+    out = os.path.join(work, f'{name}_repanel.{runner.EXTENSIONS[opts["format"]]}')
 
     env = runner.tool_env()
-    cmd = [runner.find_binary(), inp, '-o', out, '-f', opts['format']]
+    cmd = [runner.find_binary(), inp, '-o', out, '-f', opts['format'], '--title', title]
+    if opts.get('authors'):
+        cmd += ['--author', opts['authors']]
     if opts['device'] == 'custom':
         cmd += ['--width', str(opts['custom_width']), '--height', str(opts['custom_height']), '--ppi', str(opts['custom_ppi'])]
         if opts['custom_color']:
@@ -128,13 +133,23 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None):
         cmd += ['-d', opts['device']]
     if opts['rtl']:
         cmd.append('--rtl')
+    cmd += ['--quality', str(opts['quality'])]
+    if opts['overview']:
+        cmd.append('--overview')
+    if opts['webtoon']:
+        cmd.append('--webtoon')
+    if not opts['cover']:
+        cmd.append('--no-cover')
+    if not opts['auto_levels']:
+        cmd.append('--no-auto-levels')
     if opts['rect_crop']:
         cmd.append('--rect-crop')
-    if opts['format'] == 'pdf' and opts['ocr'] and runner.has_tesseract(env):
-        cmd += ['--lang', opts['lang']]
-    else:
-        if opts['format'] == 'pdf' and opts['ocr']:
-            log('Tesseract not found: converting without the dictionary text layer')
+    # The language also goes into EPUB/AZW3 metadata; only PDFs get the OCR text layer.
+    cmd += ['--lang', opts['lang']]
+    if opts['format'] == 'pdf' and opts['ocr'] and not runner.has_tesseract(env):
+        log('Tesseract not found: converting without the dictionary text layer')
+        cmd.append('--no-ocr')
+    elif opts['format'] == 'pdf' and not opts['ocr']:
         cmd.append('--no-ocr')
     cmd += shlex.split(opts['extra_args'], posix=not iswindows)
     runner.run(cmd, env, log, abort, progress)

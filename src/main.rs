@@ -1,11 +1,14 @@
 mod detect;
 mod devices;
+mod epub;
 mod input;
 mod layout;
 mod ocr;
 mod output;
 mod progress;
 mod refine;
+mod spreads;
+mod webtoon;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -20,6 +23,12 @@ enum Format {
     Pdf,
     /// Comic book zip of JPEG pages (KOReader, Kindle Comic Converter, etc.).
     Cbz,
+    /// Fixed-layout EPUB (Kobo, PocketBook, Tolino, Boox, Apple Books; Send to Kindle).
+    Epub,
+    /// Fixed-layout EPUB saved as .kepub.epub for Kobo's faster reader.
+    Kepub,
+    /// Kindle book (KF8), converted from the EPUB with calibre's ebook-convert.
+    Azw3,
     /// A folder of JPEG pages.
     Images,
 }
@@ -96,6 +105,36 @@ struct Args {
     #[arg(long)]
     page_break: bool,
 
+    /// Show each original page whole before its panels.
+    #[arg(long)]
+    overview: bool,
+
+    /// Webtoon (vertical scroll comic): join the slices, cut between panels at background gaps
+    /// and show them at screen width. Chosen automatically for pages over 3x taller than wide.
+    #[arg(long)]
+    webtoon: bool,
+
+    /// Keep two-page spreads (landscape scans of an open book) whole instead of splitting them
+    /// at the centre gutter into two pages.
+    #[arg(long)]
+    keep_spreads: bool,
+
+    /// Split the first page into panels too, instead of keeping it whole as the cover.
+    #[arg(long)]
+    no_cover: bool,
+
+    /// Keep each page's levels; by default the paper is made white and the darkest ink black.
+    #[arg(long)]
+    no_auto_levels: bool,
+
+    /// Book title (default: the input file name).
+    #[arg(long)]
+    title: Option<String>,
+
+    /// Book author, written into the PDF/EPUB/AZW3 metadata.
+    #[arg(long)]
+    author: Option<String>,
+
     /// Screen margin in pixels.
     #[arg(long, default_value_t = 8)]
     margin: u32,
@@ -112,8 +151,9 @@ struct Args {
     #[arg(long, default_value_t = 1.0)]
     gamma: f32,
 
-    /// JPEG quality of output pages.
-    #[arg(long, default_value_t = 88, value_parser = clap::value_parser!(u8).range(30..=100))]
+    /// JPEG quality of output pages (30-100). Lower makes much smaller files; e-ink shows little
+    /// difference down to about 70.
+    #[arg(short, long, default_value_t = 88, value_parser = clap::value_parser!(u8).range(30..=100))]
     quality: u8,
 
     /// Ink detection threshold (luma difference from the paper colour).
@@ -211,9 +251,25 @@ fn run() -> Result<()> {
     let start = Instant::now();
     let tmp = tempfile::tempdir()?;
     let pb = progress::spinner("Loading", "");
-    let pages = input::collect_pages(&input, tmp.path(), args.pdf_dpi, &pb)?;
+    let input::Pages { paths: mut pages, mut chapters } = input::collect_pages(&input, tmp.path(), args.pdf_dpi, &pb)?;
     pb.finish_and_clear();
     println!("Loaded {} source page(s)", pages.len());
+    let webtoon = args.webtoon || webtoon::looks_like_webtoon(&pages);
+    if webtoon {
+        let pb = progress::spinner("Loading", "cutting the webtoon strip");
+        let usable = |v: u32| v.saturating_sub(2 * args.margin).max(1) as f32;
+        let aspect = usable(device.height) / usable(device.width);
+        let cut = webtoon::cut(&pages, &chapters, &tmp.path().join("webtoon"), aspect)?;
+        pb.finish_and_clear();
+        println!("Webtoon: cut into {} piece(s) between panels", cut.paths.len());
+        (pages, chapters) = (cut.paths, cut.chapters);
+    } else if !args.keep_spreads {
+        let (split, split_chapters, n) = spreads::split(&pages, &chapters, &tmp.path().join("spreads"), args.rtl)?;
+        if n > 0 {
+            println!("Split {n} two-page spread(s) into single pages");
+            (pages, chapters) = (split, split_chapters);
+        }
+    }
 
     // 1. Detect panels on every page in parallel.
     let det = detect::DetectOptions {
@@ -234,12 +290,15 @@ fn run() -> Result<()> {
         height: u32,
         panels: Vec<detect::Panel>,
         words: Vec<ocr::Word>,
+        chapter: String,
+        levels: Option<(u8, u8)>,
     }
     // A page that can't be read is skipped with a warning instead of failing the book.
     let analysed: Vec<Option<Analysed>> = pages
         .par_iter()
+        .zip(&chapters)
         .progress_with(pb.clone())
-        .map(|p| -> Result<Option<Analysed>> {
+        .map(|(p, chapter)| -> Result<Option<Analysed>> {
             let img = match output::load_image(p) {
                 Ok(img) => img,
                 Err(e) => {
@@ -247,12 +306,29 @@ fn run() -> Result<()> {
                     return Ok(None);
                 }
             };
-            let panels = detect::detect_panels(&img, &det);
+            // A webtoon piece is one panel (or a few stacked ones) already.
+            let panels = if webtoon {
+                let rect = detect::Rect { x: 0, y: 0, w: img.width(), h: img.height() };
+                vec![detect::Panel::new(rect, None, Vec::new())]
+            } else {
+                let mut panels = detect::detect_panels(&img, &det);
+                detect::drop_edge_strips(&mut panels, img.width(), img.height());
+                panels
+            };
             let words = match &ocr_lang {
                 Some(lang) => ocr::recognize(&img, lang).with_context(|| format!("OCR of {}", p.display()))?,
                 None => Vec::new(),
             };
-            Ok(Some(Analysed { path: p.clone(), width: img.width(), height: img.height(), panels, words }))
+            let levels = if args.no_auto_levels { None } else { output::auto_levels(&img) };
+            Ok(Some(Analysed {
+                path: p.clone(),
+                width: img.width(),
+                height: img.height(),
+                panels,
+                words,
+                chapter: chapter.clone(),
+                levels,
+            }))
         })
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
@@ -294,7 +370,7 @@ fn run() -> Result<()> {
 
     // Second round on pages with doubtful panels.
     if !args.no_refine && low_before > 0 {
-        let todo: Vec<usize> = (0..analysed.len()).filter(|&i| analysed[i].panels.iter().any(|p| p.is_low())).collect();
+        let todo: Vec<usize> = (0..analysed.len()).filter(|&i| std::env::var("CS_FORCE").is_ok() || analysed[i].panels.iter().any(|p| p.is_low())).collect();
         let pb = progress::bar("Refining", todo.len(), "pages");
         let results: Vec<(usize, Vec<detect::Panel>, refine::Stats)> = todo
             .par_iter()
@@ -309,6 +385,8 @@ fn run() -> Result<()> {
         let mut total = refine::Stats::default();
         for (i, panels, st) in results {
             analysed[i].panels = panels;
+            let (pw, ph) = (analysed[i].width, analysed[i].height);
+            detect::drop_edge_strips(&mut analysed[i].panels, pw, ph);
             total.split += st.split;
             total.pieces += st.pieces;
             total.merged += st.merged;
@@ -329,6 +407,7 @@ fn run() -> Result<()> {
         analysed.par_iter().enumerate().progress_with(pb.clone()).try_for_each(|(i, a)| -> Result<()> {
             let img = output::load_image(&a.path)?;
             detect::debug_image(&img, &a.panels).save(d.join(format!("page{:04}.jpg", i + 1)))?;
+            detect::debug_masks(img.width(), img.height(), &a.panels).save(d.join(format!("page{:04}_masks.png", i + 1)))?;
             Ok(())
         })?;
         pb.finish_and_clear();
@@ -339,8 +418,14 @@ fn run() -> Result<()> {
     let mut sources = Vec::new();
     let mut shapes = Vec::new();
     let mut words = Vec::new();
+    let mut levels = Vec::new();
+    let mut rects = Vec::new();
+    let mut chapters = Vec::new();
     for a in analysed {
-        sources.push(layout::SourcePage { height: a.height, panels: a.panels.iter().map(|p| p.rect).collect() });
+        levels.push(a.levels);
+        rects.push(a.panels.iter().map(|p| p.rect).collect::<Vec<_>>());
+        chapters.push(a.chapter);
+        sources.push(layout::SourcePage { width: a.width, height: a.height, fit_width: webtoon, panels: a.panels.iter().map(|p| p.rect).collect() });
         shapes.push(a.panels.into_iter().map(|p| p.shape).collect::<Vec<_>>());
         words.push(a.words);
     }
@@ -357,6 +442,9 @@ fn run() -> Result<()> {
         max_upscale: args.max_upscale.max(1.0),
         rotate: args.rotate,
         page_break: args.page_break,
+        overview: args.overview,
+        // A single page is the whole comic, not a cover, and a webtoon has no cover page.
+        cover: !args.no_cover && sources.len() > 1 && !webtoon,
         rtl: args.rtl,
     };
     let out_pages = layout::layout(&sources, &lo);
@@ -373,20 +461,40 @@ fn run() -> Result<()> {
     let rendered: Vec<Vec<u8>> = out_pages
         .par_iter()
         .progress_with(pb.clone())
-        .map(|p| output::render_page(p, &pages, &shapes, &ro))
+        .map(|p| output::render_page(p, &pages, &rects, &shapes, &levels, &ro))
         .collect::<Result<_>>()?;
     pb.finish_and_clear();
 
     let out_path = args.output.clone().unwrap_or_else(|| default_output(&input, args.format));
-    let title = input.file_stem().and_then(|s| s.to_str()).unwrap_or("comic");
+    let title = args.title.as_deref().unwrap_or_else(|| input.file_stem().and_then(|s| s.to_str()).unwrap_or("comic"));
+    let author = args.author.as_deref();
+    let toc = table_of_contents(&out_pages, &chapters, lo.cover);
     let pb = progress::spinner("Writing", &out_path.display().to_string());
     match args.format {
         Format::Pdf => {
             let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
             let tag = ocr_lang.as_ref().map(|_| ocr::bcp47(&lang));
-            output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, title, tag.as_deref())?
+            let info = output::DocInfo { title, author, lang: tag.as_deref(), toc: &toc };
+            output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, &info)?
         }
         Format::Cbz => output::write_cbz(&out_path, &rendered)?,
+        Format::Epub | Format::Kepub | Format::Azw3 => {
+            let tag = ocr::bcp47(&lang);
+            let book = epub::Book {
+                title,
+                author,
+                toc: &toc,
+                lang: &tag,
+                width: device.width,
+                height: device.height,
+                rtl: args.rtl,
+            };
+            if args.format == Format::Azw3 {
+                epub::write_azw3(&out_path, &rendered, &book)?
+            } else {
+                epub::write_epub(&out_path, &rendered, &book)?
+            }
+        }
         Format::Images => output::write_images(&out_path, &rendered)?,
     }
     pb.finish_and_clear();
@@ -397,6 +505,42 @@ fn run() -> Result<()> {
         start.elapsed().as_secs_f32()
     );
     Ok(())
+}
+
+/// Bookmarks: one per chapter when the pages came from two or more folders, otherwise one per
+/// source page. Each points to the first output page showing that source page.
+/// The cover gets its own entry.
+fn table_of_contents(out_pages: &[layout::OutPage], chapters: &[String], cover: bool) -> Vec<output::TocEntry> {
+    let mut first = vec![usize::MAX; chapters.len()];
+    for (i, p) in out_pages.iter().enumerate() {
+        for it in &p.items {
+            first[it.page] = first[it.page].min(i);
+        }
+    }
+    let by_chapter = chapters.iter().collect::<std::collections::HashSet<_>>().len() > 1;
+    let mut toc: Vec<output::TocEntry> = Vec::new();
+    let mut last: Option<&str> = None;
+    for (pi, &page) in first.iter().enumerate() {
+        if page == usize::MAX {
+            continue;
+        }
+        if cover && pi == 0 {
+            // The first chapter's entry then points to its first page after the cover.
+            toc.push(output::TocEntry { title: "Cover".into(), page });
+            continue;
+        }
+        let title = if by_chapter {
+            if last == Some(chapters[pi].as_str()) {
+                continue;
+            }
+            if chapters[pi].is_empty() { "Start".to_string() } else { chapters[pi].clone() }
+        } else {
+            format!("Page {}", pi + 1)
+        };
+        last = Some(&chapters[pi]);
+        toc.push(output::TocEntry { title, page });
+    }
+    toc
 }
 
 /// Per-page list of panels with confidence and reasons, doubtful ones marked.
@@ -429,6 +573,9 @@ fn default_output(input: &Path, format: Format) -> PathBuf {
     let name = match format {
         Format::Pdf => format!("{stem}_repanel.pdf"),
         Format::Cbz => format!("{stem}_repanel.cbz"),
+        Format::Epub => format!("{stem}_repanel.epub"),
+        Format::Kepub => format!("{stem}_repanel.kepub.epub"),
+        Format::Azw3 => format!("{stem}_repanel.azw3"),
         Format::Images => format!("{stem}_repanel"),
     };
     input.parent().unwrap_or(Path::new(".")).join(name)

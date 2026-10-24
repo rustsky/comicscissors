@@ -1,8 +1,10 @@
 """Find and run the comic-scissors binary. Nothing here touches the GUI, so jobs can call it."""
 
 import os
+import platform
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -11,6 +13,8 @@ from calibre.constants import ismacos, iswindows
 from calibre.utils.config import JSONConfig, config_dir
 
 EXE = 'comic-scissors.exe' if iswindows else 'comic-scissors'
+# File extension of each output format.
+EXTENSIONS = {'pdf': 'pdf', 'cbz': 'cbz', 'epub': 'epub', 'kepub': 'kepub.epub', 'azw3': 'azw3'}
 
 prefs = JSONConfig('plugins/comic_scissors')
 prefs.defaults['device'] = 'paperwhite-5'
@@ -19,6 +23,11 @@ prefs.defaults['lang'] = 'en'
 prefs.defaults['ocr'] = True
 prefs.defaults['rtl'] = False
 prefs.defaults['rect_crop'] = False
+prefs.defaults['overview'] = False
+prefs.defaults['webtoon'] = False
+prefs.defaults['cover'] = True
+prefs.defaults['auto_levels'] = True
+prefs.defaults['quality'] = 88
 prefs.defaults['custom_width'] = 1264
 prefs.defaults['custom_height'] = 1680
 prefs.defaults['custom_ppi'] = 300
@@ -29,12 +38,30 @@ prefs.defaults['binary'] = ''  # empty: the binary bundled with the plugin, then
 _bundled = None
 
 
+def _platform_dir():
+    """Folder of this platform's binary in the universal plugin zip (scripts/package.py --universal)."""
+    if iswindows:
+        return 'windows-x86_64'
+    if ismacos:
+        return 'macos-universal'
+    return 'linux-' + platform.machine()
+
+
 def bundled_binary():
-    """Unpack bin/comic-scissors from the plugin zip into calibre's config dir once per version."""
+    """Unpack the bundled comic-scissors from the plugin zip into calibre's config dir once per version.
+
+    The universal zip has one binary per platform in bin/<platform>/, a per-platform zip has it in bin/.
+    """
     global _bundled
     if _bundled is None:
         from calibre_plugins.comic_scissors import ComicScissorsPlugin
-        data = get_resources('bin/' + EXE)  # noqa: F821 (injected by calibre's plugin loader)
+        from calibre.customize.ui import find_plugin
+        # Look before reading: get_resources prints a traceback for a missing name.
+        with zipfile.ZipFile(find_plugin(ComicScissorsPlugin.name).plugin_path) as z:
+            names = set(z.namelist())
+        name = next((n for n in (f'bin/{_platform_dir()}/{EXE}', 'bin/' + EXE) if n in names), None)
+        # get_resources is injected by calibre's plugin loader.
+        data = get_resources(name) if name else None  # noqa: F821
         if not data:
             _bundled = ''
             return None
@@ -54,12 +81,16 @@ def bundled_binary():
 
 
 def made_by_us(path, fmt):
-    """True for a PDF or CBZ written by comic-scissors (an earlier repack), False for an original."""
+    """True for a file written by comic-scissors (an earlier repack), False for an original."""
     try:
         if fmt == 'PDF':
             with open(path, 'rb') as f:
                 return b'/Producer (comic-scissors)' in f.read(1 << 16)
-        if fmt == 'CBZ':
+        if fmt == 'AZW3':
+            # The book producer in the EXTH header, near the start of the file.
+            with open(path, 'rb') as f:
+                return b'comic-scissors' in f.read(1 << 16)
+        if fmt in ('CBZ', 'EPUB', 'KEPUB'):
             with zipfile.ZipFile(path) as z:
                 return z.comment == b'comic-scissors'
     except (OSError, TypeError, zipfile.BadZipFile):
@@ -80,9 +111,10 @@ def find_binary():
 
 
 def tool_env():
-    """PATH with calibre's bundled Poppler (pdftoppm, pdfinfo) and the usual Tesseract locations."""
+    """PATH with calibre's own tools (ebook-convert, for AZW3), its bundled Poppler (pdftoppm,
+    pdfinfo) and the usual Tesseract locations."""
     env = dict(os.environ)
-    dirs = []
+    dirs = [getattr(sys, 'executables_location', '')]
     try:
         from calibre.ebooks.metadata.pdf import get_tools
         dirs.append(os.path.dirname(get_tools()[1]))

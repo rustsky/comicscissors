@@ -5,12 +5,20 @@
 //! screen pixels per source pixel. Panels are kept at that size (or as big as
 //! the screen allows) and stacked until the page is full, then each page is
 //! scaled up uniformly to use the leftover space.
+//!
+//! With `overview`, each source page is first shown whole on its own page,
+//! followed by its panels. With `cover`, the first source page is shown whole and
+//! not split, so it works as the book's cover.
 
 use crate::detect::Rect;
 
 #[derive(Clone, Debug)]
 pub struct SourcePage {
+    pub width: u32,
     pub height: u32,
+    /// Show the panels at the screen's width instead of their printed size (webtoon pieces,
+    /// which have no printed page to measure against).
+    pub fit_width: bool,
     pub panels: Vec<Rect>,
 }
 
@@ -28,14 +36,18 @@ pub struct LayoutOptions {
     pub max_upscale: f32,
     pub rotate: bool,
     pub page_break: bool,
+    /// Show each source page whole before its panels.
+    pub overview: bool,
+    /// Show the first source page whole, without its panels.
+    pub cover: bool,
     pub rtl: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Placement {
     pub page: usize,
-    /// Index of the panel within its source page.
-    pub panel: usize,
+    /// Index of the panel within its source page; `None` for the whole page (overview).
+    pub panel: Option<usize>,
     pub src: Rect,
     pub x: u32,
     pub y: u32,
@@ -57,6 +69,8 @@ struct Unit {
     panels: Vec<Rect>,
     scale: f32,
     rotated: bool,
+    /// The whole source page (overview), always alone on its e-reader page.
+    whole: bool,
 }
 
 impl Unit {
@@ -80,7 +94,30 @@ pub fn layout(pages: &[SourcePage], o: &LayoutOptions) -> Vec<OutPage> {
     let mut units = Vec::new();
     for (pi, sp) in pages.iter().enumerate() {
         // Screen pixels per source pixel needed for readability.
-        let target = o.readable_scale * o.print_height_in * o.ppi as f32 / sp.height as f32;
+        let target = if sp.fit_width {
+            uw / sp.width as f32
+        } else {
+            o.readable_scale * o.print_height_in * o.ppi as f32 / sp.height as f32
+        };
+        let page = Rect { x: 0, y: 0, w: sp.width, h: sp.height };
+        let cover = o.cover && pi == 0;
+        if o.overview || cover {
+            let (w, h) = (sp.width as f32, sp.height as f32);
+            let s = (uw / w).min(uh / h);
+            let sr = (uw / h).min(uh / w);
+            let rotated = o.rotate && w > h && sr > s * 1.2;
+            let scale = if rotated { sr } else { s };
+            units.push(Unit { page: pi, first: 0, panels: vec![page], scale, rotated, whole: true });
+            if cover {
+                continue;
+            }
+            // A single panel covering most of the page would only repeat the overview.
+            if let [p] = sp.panels[..] {
+                if p.area() as f32 > 0.9 * page.area() as f32 {
+                    continue;
+                }
+            }
+        }
         let mut first = 0;
         for row in group_rows(&sp.panels) {
             let row_first = first;
@@ -93,7 +130,7 @@ pub fn layout(pages: &[SourcePage], o: &LayoutOptions) -> Vec<OutPage> {
                     .min(uh / max_h);
                 // Keep panels side by side when that costs at most 10% of the target size.
                 if s >= target * 0.9 {
-                    units.push(Unit { page: pi, first: row_first, panels: row, scale: s, rotated: false });
+                    units.push(Unit { page: pi, first: row_first, panels: row, scale: s, rotated: false, whole: false });
                     continue;
                 }
             }
@@ -104,11 +141,11 @@ pub fn layout(pages: &[SourcePage], o: &LayoutOptions) -> Vec<OutPage> {
                 if o.rotate && s < target * 0.95 && w > h {
                     let sr = target.min(uw / h).min(uh / w);
                     if sr > s * 1.2 {
-                        units.push(Unit { page: pi, first, panels: vec![p], scale: sr, rotated: true });
+                        units.push(Unit { page: pi, first, panels: vec![p], scale: sr, rotated: true, whole: false });
                         continue;
                     }
                 }
-                units.push(Unit { page: pi, first, panels: vec![p], scale: s, rotated: false });
+                units.push(Unit { page: pi, first, panels: vec![p], scale: s, rotated: false, whole: false });
             }
         }
     }
@@ -121,6 +158,8 @@ pub fn layout(pages: &[SourcePage], o: &LayoutOptions) -> Vec<OutPage> {
         if let Some(last) = cur.last() {
             let brk = u.rotated
                 || last.rotated
+                || u.whole
+                || last.whole
                 || (o.page_break && last.page != u.page)
                 || cur_h + gap + h > uh;
             if brk {
@@ -195,7 +234,7 @@ fn place(units: Vec<Unit>, o: &LayoutOptions, uw: f32, uh: f32) -> OutPage {
             let (w, h) = (w.round().max(1.0) as u32, h.round().max(1.0) as u32);
             items.push(Placement {
                 page: u.page,
-                panel: u.first + i,
+                panel: (!u.whole).then_some(u.first + i),
                 src: u.panels[i],
                 x: x.round() as u32,
                 y: (y + (row_h - h as f32) / 2.0).round() as u32,
@@ -212,4 +251,67 @@ fn place(units: Vec<Unit>, o: &LayoutOptions, uw: f32, uh: f32) -> OutPage {
         items.sort_by_key(|p| (p.y, std::cmp::Reverse(p.x)));
     }
     OutPage { items }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(overview: bool) -> LayoutOptions {
+        LayoutOptions {
+            screen_w: 1000,
+            screen_h: 1400,
+            ppi: 300,
+            margin: 0,
+            gap: 10,
+            readable_scale: 0.8,
+            print_height_in: 10.0,
+            max_upscale: 2.0,
+            rotate: false,
+            page_break: false,
+            overview,
+            cover: false,
+            rtl: false,
+        }
+    }
+
+    fn page(panels: Vec<Rect>) -> SourcePage {
+        SourcePage { width: 2000, height: 3000, fit_width: false, panels }
+    }
+
+    #[test]
+    fn overview_puts_each_page_before_its_panels() {
+        let half = |y| Rect { x: 0, y, w: 2000, h: 1400 };
+        let pages = [page(vec![half(0), half(1500)]), page(vec![half(0), half(1500)])];
+        let out = layout(&pages, &opts(true));
+        let seq: Vec<Vec<(usize, Option<usize>)>> =
+            out.iter().map(|p| p.items.iter().map(|it| (it.page, it.panel)).collect()).collect();
+        // Each overview is alone on its e-reader page.
+        assert!(seq.iter().all(|p| p.len() == 1 || p.iter().all(|it| it.1.is_some())));
+        let order: Vec<(usize, Option<usize>)> = seq.concat();
+        let pos = |x| order.iter().position(|&o| o == x).unwrap();
+        assert!(pos((0, None)) < pos((0, Some(0))) && pos((0, Some(1))) < pos((1, None)));
+        assert!(pos((1, None)) < pos((1, Some(0))));
+    }
+
+    #[test]
+    fn cover_is_whole_and_not_split() {
+        let half = |y| Rect { x: 0, y, w: 2000, h: 1400 };
+        let pages = [page(vec![half(0), half(1500)]), page(vec![half(0), half(1500)])];
+        let out = layout(&pages, &LayoutOptions { cover: true, ..opts(false) });
+        let items: Vec<(usize, Option<usize>)> = out.iter().flat_map(|p| p.items.iter().map(|it| (it.page, it.panel))).collect();
+        assert_eq!(items[0], (0, None));
+        assert_eq!(out[0].items.len(), 1, "the cover is alone on its page");
+        assert!(!items.contains(&(0, Some(0))), "the cover's panels are not repeated");
+        assert!(items.contains(&(1, Some(0))) && items.contains(&(1, Some(1))));
+    }
+
+    #[test]
+    fn overview_skips_panels_that_repeat_the_page() {
+        let pages = [page(vec![Rect { x: 10, y: 10, w: 1980, h: 2980 }])];
+        let out = layout(&pages, &opts(true));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].items[0].panel, None);
+        assert!(layout(&pages, &opts(false))[0].items.iter().all(|it| it.panel == Some(0)));
+    }
 }
