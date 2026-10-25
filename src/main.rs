@@ -7,13 +7,17 @@ mod ocr;
 mod output;
 mod progress;
 mod refine;
+mod review;
 mod spreads;
+#[cfg(test)]
+mod synth;
 mod webtoon;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -173,9 +177,14 @@ struct Args {
     #[arg(long, default_value_t = 300)]
     pdf_dpi: u32,
 
-    /// Write each source page with the detected panels outlined into this folder.
+    /// Write each source page with the detected panels outlined into this folder, then open a
+    /// review page in the browser to tag the pages detected wrong (saved to review.json there).
     #[arg(long)]
     debug_dir: Option<PathBuf>,
+
+    /// With --debug-dir: don't open the review page.
+    #[arg(long)]
+    no_review: bool,
 
     /// Print progress as `@@progress <stage>|<pos>|<len>` lines on stdout (for front ends).
     #[arg(long, hide = true)]
@@ -413,6 +422,13 @@ fn run() -> Result<()> {
         pb.finish_and_clear();
         std::fs::write(d.join("report.txt"), report(&analysed.iter().map(|a| (&a.path, &a.panels)).collect::<Vec<_>>()))?;
     }
+    // Kept for the review after the book is written (the pages are consumed below).
+    let review = args.debug_dir.is_some() && !args.no_review && !args.progress_lines && std::io::stdin().is_terminal();
+    let reviewed: Vec<(PathBuf, u32, u32, Vec<detect::Panel>)> = if review {
+        analysed.iter().map(|a| (a.path.clone(), a.width, a.height, a.panels.clone())).collect()
+    } else {
+        Vec::new()
+    };
 
     let pages: Vec<PathBuf> = analysed.iter().map(|a| a.path.clone()).collect();
     let mut sources = Vec::new();
@@ -504,6 +520,13 @@ fn run() -> Result<()> {
         out_path.display(),
         start.elapsed().as_secs_f32()
     );
+    if let (true, Some(d)) = (review, &args.debug_dir) {
+        let pages: Vec<review::Page> = reviewed
+            .iter()
+            .map(|(source, width, height, panels)| review::Page { source, width: *width, height: *height, panels })
+            .collect();
+        review::serve(d, &input, &pages)?;
+    }
     Ok(())
 }
 

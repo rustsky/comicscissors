@@ -56,6 +56,10 @@ cargo build --release
 python3 scripts/package.py --binary target/release/comic-scissors --platform macos-arm64   # -> dist/
 ```
 
+Detection regressions are tested on synthetic pages (`src/synth.rs`) that redraw the failing book
+pages with plain shapes, since real pages can't go into the repository. `scripts/synthetic_pages.sh`
+writes them out as PNGs, each with a copy showing the detected panels, to `target/synthetic/`.
+
 ## Use
 
 ```sh
@@ -159,7 +163,7 @@ installed (it is found on PATH or in calibre's default install folder).
 | File too big | `-q 70` (JPEG quality, default 88), `--max-upscale 1.3` |
 | Dictionary lookup missing words | check `--lang`; copy the PDF over USB (Send to Kindle can drop the text layer) |
 | Neighbouring panels cut into an L-shaped panel | `--rect-crop` |
-| Check detection | `--debug-dir dbg/` writes each page with the detected panel outlines, numbered in reading order (`3?` = still doubtful), plus `report.txt` with each panel's confidence and the reasons |
+| Check detection | `--debug-dir dbg/` writes each page with the detected panel outlines, numbered in reading order (`3?` = still doubtful), plus `report.txt` with each panel's confidence and the reasons. After the book is written it opens a review page in the browser: tag the pages detected wrong (what went wrong, a note, and optionally the boxes of the panels that should have been found). Tags go to `dbg/review.json` and the original of each tagged page to `dbg/sources/`. `--no-review` skips it |
 
 ## Known limitations
 

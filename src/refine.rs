@@ -41,6 +41,11 @@ pub struct Stats {
 pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f32) -> (Vec<Panel>, Stats) {
     let mut stats = Stats::default();
     if !panels.iter().any(Panel::is_low) {
+        let mut panels = panels;
+        merge_unframed_overlaps(&mut panels, &mut stats);
+        if stats.merged > 0 {
+            panels = detect::reading_order(panels, |p| p.rect, rtl);
+        }
         return (panels, stats);
     }
     let (pw, ph) = (img.width(), img.height());
@@ -63,9 +68,10 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
     let mut out: Vec<Panel> = Vec::new();
     let mut fragments: Vec<Panel> = Vec::new();
     for p in panels {
-        // A box grown around text keeps its shape, unless it is far bigger than usual: then it
-        // may hold several panels joined without a white gutter.
-        let oversized = p.issues.contains(&Issue::Oversized);
+        // A box grown around text keeps its shape, unless it is bigger than usual or a gutter
+        // runs across it: then it may hold several panels. Panels kept together for a balloon
+        // they share are not cut apart again.
+        let oversized = p.issues.iter().any(|i| matches!(i, Issue::Oversized | Issue::Large | Issue::InnerGutter));
         if !p.is_low() || (p.issues.contains(&Issue::Joined) && !oversized) {
             out.push(p);
             continue;
@@ -80,6 +86,10 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
             } else {
                 fragments.push(p);
             }
+            continue;
+        }
+        if p.issues.contains(&Issue::Balloon) {
+            out.push(p);
             continue;
         }
         let region = page.region(&p);
@@ -129,7 +139,32 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
             None => out.push(f),
         }
     }
+    merge_unframed_overlaps(&mut out, &mut stats);
     (detect::reading_order(out, |p| p.rect, rtl), stats)
+}
+
+/// Two panels whose boxes overlap a good deal, one of them without a frame of its own (a box
+/// grown around ink, a borderless candidate), are pieces of one borderless picture: figures on
+/// blank rain with no gutter between them. Framed panels are left alone: the boxes of slanted
+/// panels overlap.
+fn merge_unframed_overlaps(panels: &mut Vec<Panel>, stats: &mut Stats) {
+    let unframed = |p: &Panel| p.issues.iter().any(|i| matches!(i, Issue::Joined | Issue::NoBorder));
+    loop {
+        let pair = (0..panels.len()).flat_map(|i| (i + 1..panels.len()).map(move |j| (i, j))).find(|&(i, j)| {
+            let (a, b) = (&panels[i], &panels[j]);
+            (unframed(a) || unframed(b)) && a.rect.overlap_area(&b.rect) * 100 >= 15 * a.rect.area().min(b.rect.area())
+        });
+        let Some((i, j)) = pair else { return };
+        let b = panels.remove(j);
+        let a = &mut panels[i];
+        a.rect = union(&a.rect, &b.rect);
+        a.shape = None;
+        for issue in b.issues {
+            a.add_issue(issue);
+        }
+        a.add_issue(Issue::Refined);
+        stats.merged += 1;
+    }
 }
 
 /// Paper and dark-ink maps of the page at search resolution.
@@ -210,10 +245,12 @@ impl Region {
         let y1 = (((self.y + self.h) as f32 * s).ceil() as i64 + pad).min(ph as i64);
         let rect = Rect { x: x0 as u32, y: y0 as u32, w: (x1 - x0) as u32, h: (y1 - y0) as u32 };
         let fill = self.area() as f32 / (self.w * self.h) as f32;
-        let shape = (fill < 0.97).then(|| {
-            let mask = Mask { w: self.w, h: self.h, data: self.m };
-            Shape::from_mask(&mask, self.x as f32 * s, self.y as f32 * s, s, s)
-        });
+        let shape = (fill < 0.97)
+            .then(|| {
+                let mask = Mask { w: self.w, h: self.h, data: self.m };
+                Shape::from_mask(&mask, self.x as f32 * s, self.y as f32 * s, s, s)
+            })
+            .filter(|sh| !sh.cuts_bleed(&rect, pw, ph));
         Panel::new(rect, shape, vec![Issue::Refined])
     }
 }
@@ -321,12 +358,104 @@ fn find_cut(page: &Page, r: &Region, horizontal: bool) -> Option<Cut> {
                 continue;
             }
             let score = p + 0.5 * (above + below) / 2.0;
-            if best.is_none_or(|b| score > b.score) {
+            if best.is_none_or(|b| score > b.score) && !crosses_balloon(page, r, horizontal, &shift, c, max_gap) {
                 best = Some(Cut { horizontal, slope, offset: c as f32, score });
             }
         }
     }
     best
+}
+
+/// Whether a balloon shared by the panels on both sides crosses the gutter at line `c` (shifted
+/// by `shift` along it). Paper flooding out from the line stays in a gutter lined by borders; where
+/// a balloon crosses, it spills into the balloon on both sides (around its lettering). Such a
+/// stretch counts when the gutter runs on with borders beyond its ends, or beyond one of them when
+/// it reaches the line's other end: near the end of a gutter, the page margin and pale art can lie
+/// on both sides.
+fn crosses_balloon(page: &Page, r: &Region, horizontal: bool, shift: &[i64], c: usize, max_gap: usize) -> bool {
+    let (len_t, len_u) = if horizontal { (r.w, r.h) } else { (r.h, r.w) };
+    let reach = 4 * max_gap as i64;
+    let far = 2 * max_gap as i64;
+    let span = (2 * reach + 1) as usize;
+    // Paper at offset `d` across the line at `t`, inside the region.
+    let paper = |t: usize, d: i64| {
+        let u = c as i64 + shift[t] + d;
+        if u < 0 || u >= len_u as i64 {
+            return false;
+        }
+        let (x, y) = if horizontal { (t, u as usize) } else { (u as usize, t) };
+        r.m[y * r.w + x] && page.paper[(r.y + y) * page.w + r.x + x] == 1
+    };
+    let mut seen = vec![false; len_t * span];
+    let mut stack: Vec<(usize, i64)> = (0..len_t).filter(|&t| paper(t, 0)).map(|t| (t, 0)).collect();
+    for &(t, d) in &stack {
+        seen[t * span + (d + reach) as usize] = true;
+    }
+    let (mut before, mut after) = (vec![false; len_t], vec![false; len_t]);
+    while let Some((t, d)) = stack.pop() {
+        if d < -far {
+            before[t] = true;
+        } else if d > far {
+            after[t] = true;
+        }
+        for (nt, nd) in [(t as i64 - 1, d), (t as i64 + 1, d), (t as i64, d - 1), (t as i64, d + 1)] {
+            if nt < 0 || nt >= len_t as i64 || nd.abs() > reach {
+                continue;
+            }
+            let (nt, k) = (nt as usize, nt as usize * span + (nd + reach) as usize);
+            if !seen[k] && paper(nt, nd) {
+                seen[k] = true;
+                stack.push((nt, nd));
+            }
+        }
+    }
+    let mut open: Vec<bool> = (0..len_t).map(|t| before[t] && after[t]).collect();
+    // Lettering touching the line breaks the stretch for a few pixels.
+    let mut last = None;
+    for t in 0..len_t {
+        if open[t] {
+            if let Some(l) = last
+                && t - l <= 6
+            {
+                open[l..t].fill(true);
+            }
+            last = Some(t);
+        }
+    }
+    let min_run = (0.03 * page.w.max(page.h) as f32) as usize;
+    // Lined by borders on most of `range` (the page margin may lie past a gutter's end), for at
+    // least `min_run` or up to the line's end.
+    let closed = |range: std::ops::Range<usize>| {
+        // (Open page margin at the line's very end is left out.)
+        let mut range = range;
+        if range.start == 0 {
+            range.start = (0..range.end).find(|&t| !open[t]).unwrap_or(range.end);
+        }
+        if range.end == len_t {
+            range.end = (range.start..len_t).rfind(|&t| !open[t]).map_or(range.start, |t| t + 1);
+        }
+        let ends = range.start <= min_run / 2 || range.end + min_run / 2 >= len_t;
+        (range.len() >= min_run || (!range.is_empty() && ends))
+            && range.clone().filter(|&t| !open[t]).count() * 10 >= range.len() * 8
+    };
+    let mut t = 0;
+    while t < len_t {
+        if !open[t] {
+            t += 1;
+            continue;
+        }
+        let start = t;
+        while t < len_t && open[t] {
+            t += 1;
+        }
+        // (A balloon may also hang over the gutter's end: the stretch then runs to the line's end.)
+        let (lead, tail) = (closed(start.saturating_sub(min_run)..start), closed(t..(t + min_run).min(len_t)));
+        let (at_start, at_end) = (start <= 3, t + 3 >= len_t);
+        if t - start >= min_run && ((lead && (tail || at_end)) || (at_start && tail)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// A gutter drawn as one thick black line: line `c` is the middle of a band of at most
