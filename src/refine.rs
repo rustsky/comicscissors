@@ -22,7 +22,7 @@ const MAX_DEPTH: u32 = 3;
 /// `CROSSED_BORDER` dark on both sides.
 const CROSSED_PAPER: f32 = 0.72;
 /// A black frame line between two panels: share of dark pixels along it.
-/// Both set above 1 (off): on fido1 they cut through a caption bar and a wide panel.
+/// Both set above 1 (off): on test pages they cut through a caption bar and a wide panel.
 /// Only clean white gutters split; was 0.7 and 0.85.
 const CROSSED_BORDER: f32 = 2.0;
 const BLACK_LINE: f32 = 2.0;
@@ -42,7 +42,7 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
     let mut stats = Stats::default();
     if !panels.iter().any(Panel::is_low) {
         let mut panels = panels;
-        merge_unframed_overlaps(&mut panels, &mut stats);
+        merge_unframed_overlaps(&mut panels, img, &mut stats);
         if stats.merged > 0 {
             panels = detect::reading_order(panels, |p| p.rect, rtl);
         }
@@ -59,8 +59,20 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
     let page = Page {
         w: gray.width() as usize,
         h: gray.height() as usize,
-        paper: gray.pixels().map(|p| (p[0] as i32 >= bg - 45) as u8).collect(),
-        dark: gray.pixels().map(|p| ((p[0] as i32) <= (bg * 45 / 100).min(110)) as u8).collect(),
+        // Paper is the page's own colour, light or dark; a border is dark ink or a strong edge
+        // (a frame on a dark page is light).
+        paper: gray.pixels().map(|p| ((p[0] as i32 - bg).abs() <= 45) as u8).collect(),
+        dark: {
+            let edges = crate::edges::Edges::new(&gray);
+            let w = gray.width() as usize;
+            gray.pixels()
+                .enumerate()
+                .map(|(i, p)| {
+                    let (x, y) = ((i % w) as i64, (i / w) as i64);
+                    ((p[0] as i32) <= (bg * 45 / 100).min(110) || (bg < 128 && (edges.along(x, y, true) || edges.along(x, y, false)))) as u8
+                })
+                .collect()
+        },
         ws,
     };
     let pad = (pw.min(ph) as f32 * padding).round() as i64;
@@ -88,7 +100,7 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
             }
             continue;
         }
-        if p.issues.contains(&Issue::Balloon) {
+        if p.issues.contains(&Issue::KeptWhole) {
             out.push(p);
             continue;
         }
@@ -139,20 +151,43 @@ pub fn refine_page(img: &DynamicImage, panels: Vec<Panel>, rtl: bool, padding: f
             None => out.push(f),
         }
     }
-    merge_unframed_overlaps(&mut out, &mut stats);
+    merge_unframed_overlaps(&mut out, img, &mut stats);
     (detect::reading_order(out, |p| p.rect, rtl), stats)
 }
 
 /// Two panels whose boxes overlap a good deal, one of them without a frame of its own (a box
 /// grown around ink, a borderless candidate), are pieces of one borderless picture: figures on
 /// blank rain with no gutter between them. Framed panels are left alone: the boxes of slanted
-/// panels overlap.
-fn merge_unframed_overlaps(panels: &mut Vec<Panel>, stats: &mut Stats) {
+/// panels overlap. So is a pair with a frame line across the overlap: a framed panel whose box
+/// grew past its frame.
+fn merge_unframed_overlaps(panels: &mut Vec<Panel>, img: &DynamicImage, stats: &mut Stats) {
     let unframed = |p: &Panel| p.issues.iter().any(|i| matches!(i, Issue::Joined | Issue::NoBorder));
+    let gray = img.to_luma8();
+    let bg = detect::background_luma(&gray) as i32;
+    let dark = |x: u32, y: u32| (gray.get_pixel(x, y)[0] as i32) < bg - 100;
+    // A line along the overlap's long side dark nearly all along it (a figure crossing the overlap
+    // spans its short side). Only a long thin overlap is a strip along a frame: in a squarer one, a
+    // figure in black is dark all along too.
+    let frame_across = |o: Rect| {
+        if o.w.max(o.h) < 3 * o.w.min(o.h) {
+            false
+        } else if o.w >= o.h {
+            (o.y..o.bottom()).any(|y| (o.x..o.right()).filter(|&x| dark(x, y)).count() * 10 >= o.w as usize * 8)
+        } else {
+            (o.x..o.right()).any(|x| (o.y..o.bottom()).filter(|&y| dark(x, y)).count() * 10 >= o.h as usize * 8)
+        }
+    };
+    let overlap = |a: &Rect, b: &Rect| {
+        let (x0, y0) = (a.x.max(b.x), a.y.max(b.y));
+        let (x1, y1) = (a.right().min(b.right()).min(gray.width()), a.bottom().min(b.bottom()).min(gray.height()));
+        (x1 > x0 && y1 > y0).then(|| Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+    };
     loop {
         let pair = (0..panels.len()).flat_map(|i| (i + 1..panels.len()).map(move |j| (i, j))).find(|&(i, j)| {
             let (a, b) = (&panels[i], &panels[j]);
-            (unframed(a) || unframed(b)) && a.rect.overlap_area(&b.rect) * 100 >= 15 * a.rect.area().min(b.rect.area())
+            (unframed(a) || unframed(b))
+                && a.rect.overlap_area(&b.rect) * 100 >= 15 * a.rect.area().min(b.rect.area())
+                && overlap(&a.rect, &b.rect).is_some_and(|o| !frame_across(o))
         });
         let Some((i, j)) = pair else { return };
         let b = panels.remove(j);
@@ -358,12 +393,75 @@ fn find_cut(page: &Page, r: &Region, horizontal: bool) -> Option<Cut> {
                 continue;
             }
             let score = p + 0.5 * (above + below) / 2.0;
-            if best.is_none_or(|b| score > b.score) && !crosses_balloon(page, r, horizontal, &shift, c, max_gap) {
+            if best.is_none_or(|b| score > b.score)
+                && lined_ends(page, r, horizontal, &shift, c, max_gap)
+                && !enclosed_cut(page, r, horizontal, &shift, c, max_gap)
+                && !crosses_balloon(page, r, horizontal, &shift, c, max_gap)
+            {
                 best = Some(Cut { horizontal, slope, offset: c as f32, score });
             }
         }
     }
     best
+}
+
+/// Whether the line at `c` (shifted by `shift` along it) is closed off at both ends by a frame
+/// line running straight across it: it lies inside one picture, whose side frames a real gutter
+/// would break.
+fn enclosed_cut(page: &Page, r: &Region, horizontal: bool, shift: &[i64], c: usize, max_gap: usize) -> bool {
+    const NEAR: usize = 12;
+    let (len_t, len_u) = if horizontal { (r.w, r.h) } else { (r.h, r.w) };
+    let at = |t: usize, d: i64| {
+        let u = c as i64 + shift[t] + d;
+        (u >= 0 && u < len_u as i64).then(|| {
+            let (x, y) = if horizontal { (t, u as usize) } else { (u as usize, t) };
+            (r.m[y * r.w + x], page.dark[(r.y + y) * page.w + r.x + x] == 1)
+        })
+    };
+    let inside = |t: usize| at(t, 0).is_some_and(|(m, _)| m);
+    let g = max_gap as i64;
+    // Dark all across the gutter's width (and a little past it) at `t`.
+    let crossed = |t: usize| (-g..=g).all(|d| at(t, d).is_some_and(|(_, dark)| dark));
+    let (Some(first), Some(last)) = ((0..len_t).find(|&t| inside(t)), (0..len_t).rfind(|&t| inside(t))) else {
+        return false;
+    };
+    (first..(first + NEAR).min(len_t)).any(crossed) && (last.saturating_sub(NEAR)..=last).any(crossed)
+}
+
+/// Whether the gutter at line `c` (shifted by `shift` along it) has a frame line beside it at both
+/// of its ends (on one side at least: a panel bleeding off the page has no frame there). A line
+/// carried on from a gutter into a panel across its end (a tall panel beside two stacked ones)
+/// has none there: the cut belongs along the tall panel's side first.
+fn lined_ends(page: &Page, r: &Region, horizontal: bool, shift: &[i64], c: usize, max_gap: usize) -> bool {
+    const END: f32 = 0.25;
+    const LINED: f32 = 0.4;
+    let (len_t, len_u) = if horizontal { (r.w, r.h) } else { (r.h, r.w) };
+    let dark = |t: usize, d: i64| {
+        let u = c as i64 + shift[t] + d;
+        if u < 0 || u >= len_u as i64 {
+            return false;
+        }
+        let (x, y) = if horizontal { (t, u as usize) } else { (u as usize, t) };
+        r.m[y * r.w + x] && page.dark[(r.y + y) * page.w + r.x + x] == 1
+    };
+    let g = max_gap as i64;
+    let inside = |t: usize| {
+        let u = c as i64 + shift[t];
+        u >= 0 && u < len_u as i64 && {
+            let (x, y) = if horizontal { (t, u as usize) } else { (u as usize, t) };
+            r.m[y * r.w + x]
+        }
+    };
+    let ts: Vec<usize> = (0..len_t).filter(|&t| inside(t)).collect();
+    let n = (ts.len() as f32 * END) as usize;
+    if n < 4 {
+        return true;
+    }
+    let lined = |part: &[usize]| {
+        part.iter().filter(|&&t| (1..=g).any(|d| dark(t, -d)) || (1..=g).any(|d| dark(t, d))).count() as f32
+            >= LINED * part.len() as f32
+    };
+    lined(&ts[..n]) && lined(&ts[ts.len() - n..])
 }
 
 /// Whether a balloon shared by the panels on both sides crosses the gutter at line `c` (shifted
@@ -559,7 +657,7 @@ mod tests {
         assert_eq!((panels.len(), stats.split), (1, 0));
     }
 
-    // Regression (Blazing 4 p. 7, 8): panels separated by one thick black line and no white
+    // Regression: panels separated by one thick black line and no white
     // gutter are split along it.
     #[test]
     #[ignore = "black-line splits are off (BLACK_LINE > 1)"]

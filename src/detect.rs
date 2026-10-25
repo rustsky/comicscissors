@@ -56,10 +56,10 @@ pub struct DetectOptions {
     /// Keep the outline of non-rectangular panels so they can be cut out exactly.
     pub exact_shapes: bool,
     pub rtl: bool,
+    /// Settings for the book's drawing style (see [`crate::style`]).
+    pub tuning: crate::style::Tuning,
 }
 
-/// Longest side used for analysis; detection runs on a downscaled copy.
-const DETECT_MAX: u32 = 1200;
 /// Erosion radius (analysis pixels) used to break thin bridges between panels.
 const ERODE: usize = 3;
 const MAX_DEPTH: u32 = 12;
@@ -102,9 +102,17 @@ pub enum Issue {
     /// Grown by, or made of, ink outside the detected panels (a caption, a title, a
     /// borderless panel). The second round leaves it as it is.
     Joined,
-    /// Panels kept together because a balloon crosses the gutter between them, with its text
-    /// in both: cutting there would cut the text. The second round does not split it.
-    Balloon,
+    /// Kept whole across a gutter-like band: a balloon crosses it with text on both sides, or a
+    /// panel runs on across it (its side frame unbroken). Cutting there would cut the text or
+    /// the panel. The second round does not split it.
+    KeptWhole,
+    /// Merged from pieces filling one panel of a page layout the book uses (see
+    /// [`crate::template`]).
+    Template,
+    /// Merged with a neighbour it had no frame line or gutter between (see [`crate::pattern`]).
+    Seamless,
+    /// The page kept whole: much of its ink is text outside any panel (a prose page, an ad).
+    Text,
 }
 
 impl Issue {
@@ -119,7 +127,10 @@ impl Issue {
             Issue::Oversized => 0.55,
             Issue::Refined => 1.0,
             Issue::Joined => 1.0,
-            Issue::Balloon => 1.0,
+            Issue::KeptWhole => 1.0,
+            Issue::Template => 1.0,
+            Issue::Seamless => 1.0,
+            Issue::Text => 1.0,
         }
     }
 
@@ -134,7 +145,10 @@ impl Issue {
             Issue::Oversized => "much bigger than usual",
             Issue::Refined => "re-checked in second round",
             Issue::Joined => "joined with nearby text",
-            Issue::Balloon => "balloon shared across a gutter",
+            Issue::KeptWhole => "kept whole across a gutter",
+            Issue::Template => "merged to the book's page layout",
+            Issue::Seamless => "merged: no frame or gutter between",
+            Issue::Text => "text page kept whole",
         }
     }
 }
@@ -223,7 +237,7 @@ impl Shape {
     }
 
     /// Mask pixels on the outline, as page-coordinate rectangles.
-    fn outline(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
+    pub(crate) fn outline(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
         (0..self.h as isize).flat_map(move |y| {
             (0..self.w as isize).filter_map(move |x| {
                 let edge = self.get(x, y)
@@ -347,11 +361,40 @@ impl Mask {
     }
 }
 
+/// Chroma (channel spread) above which a pixel counts as coloured ink in a colour book.
+const COLOR_INK: u8 = 60;
+
 /// Candidates covering more of the page than this get a second look (see [`score`]).
 const LARGE_SHARE: f32 = 0.25;
 
 /// Share of the page's ink outside all panels above which the page is kept whole.
 const UNCOVERED_INK: f32 = 0.3;
+
+/// The page at analysis resolution (longest side at most `max`): grey, and how coloured each
+/// pixel is (the spread of its channels).
+pub fn analysis_gray(img: &DynamicImage, max: u32) -> (GrayImage, GrayImage) {
+    let (ow, oh) = (img.width(), img.height());
+    let longest = ow.max(oh);
+    let scaled = if longest <= max {
+        std::borrow::Cow::Borrowed(img)
+    } else {
+        let s = max as f32 / longest as f32;
+        let nw = ((ow as f32 * s).round() as u32).max(1);
+        let nh = ((oh as f32 * s).round() as u32).max(1);
+        std::borrow::Cow::Owned(img.resize_exact(nw, nh, FilterType::Triangle))
+    };
+    let gray = scaled.to_luma8();
+    let chroma = if scaled.color().channel_count() >= 3 {
+        let rgb = scaled.to_rgb8();
+        GrayImage::from_fn(rgb.width(), rgb.height(), |x, y| {
+            let [r, g, b] = rgb.get_pixel(x, y).0;
+            image::Luma([r.max(g).max(b) - r.min(g).min(b)])
+        })
+    } else {
+        GrayImage::new(gray.width(), gray.height())
+    };
+    (gray, chroma)
+}
 
 pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
     let (ow, oh) = (img.width(), img.height());
@@ -360,14 +403,8 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
         return vec![full];
     }
 
-    let mut gray = img.to_luma8();
-    let longest = ow.max(oh);
-    if longest > DETECT_MAX {
-        let s = DETECT_MAX as f32 / longest as f32;
-        let nw = ((ow as f32 * s).round() as u32).max(1);
-        let nh = ((oh as f32 * s).round() as u32).max(1);
-        gray = image::imageops::resize(&gray, nw, nh, FilterType::Triangle);
-    }
+    let t = &o.tuning;
+    let (gray, chroma) = analysis_gray(img, t.analysis_max);
     let (dw, dh) = gray.dimensions();
     let (w, h) = (dw as usize, dh as usize);
     let fx = ow as f32 / dw as f32;
@@ -375,15 +412,21 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
 
     let bg = background_luma(&gray);
     let thr = o.threshold as i16;
+    // In a colour book, clearly coloured pixels are ink however pale (a yellow sky). Only on white
+    // paper: on a page printed to the edge (a cover, a splash), the border colour is the "paper".
+    let white_paper = bg >= 200 && background_luma(&chroma) < 30;
+    let colored = |i: usize| t.color_ink && white_paper && chroma.as_raw()[i] > COLOR_INK;
     let ink = Mask {
         w,
         h,
-        data: gray.pixels().map(|p| (p[0] as i16 - bg as i16).abs() > thr).collect(),
+        data: gray.pixels().enumerate().map(|(i, p)| (p[0] as i16 - bg as i16).abs() > thr || colored(i)).collect(),
     }
     .morph(1, false);
 
     // Strictly paper-coloured pixels (pale art like sky is not paper).
-    let paper = Mask { w, h, data: gray.pixels().map(|p| (p[0] as i16 - bg as i16).abs() <= 20).collect() };
+    let paper = Mask { w, h, data: gray.pixels().enumerate().map(|(i, p)| (p[0] as i16 - bg as i16).abs() <= 20 && !colored(i)).collect() };
+    // Hairline gutters (see [`crate::style`]), closed by thickening the ink.
+    let hair = if t.hairlines { crate::style::hairlines(&gray, bg) } else { Mask::new(w, h) };
 
     let solid = solid_mask(&ink);
     let core = solid.morph(ERODE, true);
@@ -425,7 +468,7 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
             }
             out
         };
-        let blob = Blob { m: &own, ink: crop(&ink), paper: crop(&paper) };
+        let blob = Blob { m: &own, ink: crop(&ink), paper: crop(&paper), hair: crop(&hair), frame_lines: t.frame_lines };
         split(&blob, local, o.split_coverage, min_seg, 0, false, &mut parts);
         let was_split = parts.len() > 1;
         for (r, balloon) in parts {
@@ -461,7 +504,9 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
         }
     }
     panels.retain(|c| host(&c.r).is_none());
-    merge_under_open_frames(&mut panels, &ink);
+    if t.bleeds {
+        merge_under_open_frames(&mut panels, &ink);
+    }
     // Pages of unframed pictures (gag cartoons, illustrated text, ads): cutting out the
     // drawings splits figures and their captions apart. Keep the whole page instead.
     // (A borderless candidate over a third of the page is not one picture but several panels
@@ -501,7 +546,7 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
         })
         .count();
     if total_ink > 0 && outside as f32 > UNCOVERED_INK * total_ink as f32 {
-        return vec![full];
+        return vec![Panel::new(full.rect, None, vec![Issue::Text])];
     }
     attach_stray_ink(&mut panels, &ink);
     // A box grown over the pieces of a borderless panel (figures found on their own) takes them in.
@@ -521,7 +566,7 @@ pub fn detect_panels(img: &DynamicImage, o: &DetectOptions) -> Vec<Panel> {
             let fill = m.data.iter().filter(|&&b| b).count() as f32 / m.data.len().max(1) as f32;
             let shape = (o.exact_shapes && fill < RECT_FILL)
                 .then(|| Shape::from_mask(m, r.x as f32 * fx, r.y as f32 * fy, fx, fy))
-                .filter(|s| !s.cuts_bleed(&rect, ow, oh));
+                .filter(|s| !(t.bleeds && s.cuts_bleed(&rect, ow, oh)));
             Panel::new(rect, shape, score(c, &ink, &paper, w, h))
         })
         .collect();
@@ -540,7 +585,7 @@ struct Cand {
     was_split: bool,
     /// Grown by or made of stray ink (see [`attach_stray_ink`]).
     joined: bool,
-    /// Kept whole for a balloon shared across a gutter (see [`Issue::Balloon`]).
+    /// Kept whole across a gutter-like band (see [`Issue::KeptWhole`]).
     balloon: bool,
 }
 
@@ -958,6 +1003,7 @@ fn attach_stray_ink(panels: &mut Vec<Cand>, ink: &Mask) {
         // (A few lines of lettering at most: a taller block is a borderless panel.)
         let on_frame = owners.is_empty() && (g.h as usize) < h / 12;
         if on_frame {
+            // (On the frame: across it, not just beside it.)
             let mut touching: Vec<usize> = (0..n).filter(|&i| big(i) && gap(&detected[i]) <= margin as f32).collect();
             touching.sort_by_key(|&i| std::cmp::Reverse(share[k * n + i].0));
             owners = touching;
@@ -1089,7 +1135,7 @@ fn score(c: &Cand, ink: &Mask, paper: &Mask, page_w: usize, page_h: usize) -> Ve
     // reached (frames touching the image edge enclose them, or a gutter too thin to survive
     // downscaling): check it again. This holds for a box grown around text too.
     let large = c.r.area() as f32 > LARGE_SHARE * (page_w * page_h) as f32;
-    let mut issues = if c.balloon { vec![Issue::Balloon] } else { Vec::new() };
+    let mut issues = if c.balloon { vec![Issue::KeptWhole] } else { Vec::new() };
     // Its box was built around the ink itself: the outline checks do not apply.
     if c.joined {
         issues.push(Issue::Joined);
@@ -1257,7 +1303,7 @@ fn convex_hull(mut pts: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
 }
 
 /// Median luma of a thin band around the page edge: the paper / gutter colour.
-pub(crate) fn background_luma(g: &GrayImage) -> u8 {
+pub fn background_luma(g: &GrayImage) -> u8 {
     let (w, h) = g.dimensions();
     let band = ((w.min(h) as f32 * 0.01) as u32).clamp(2, w.min(h) / 2);
     let mut hist = [0u64; 256];
@@ -1415,19 +1461,37 @@ struct Blob<'a> {
     m: &'a Mask,
     ink: Mask,
     paper: Mask,
+    /// Hairline gutters (empty unless the book has them).
+    hair: Mask,
+    /// Cut along frame lines shared by panels (see [`frame_line`]).
+    frame_lines: bool,
 }
 
 /// Recursively cut a blob along lines covered at most `coverage` of their length.
 /// `min_seg` = (min width, min height) of a piece; cuts that would create slivers are rejected.
 /// Each piece comes with whether it was kept whole somewhere for a balloon shared across a gutter.
 fn split(blob: &Blob, r: Rect, coverage: f32, min_seg: (usize, usize), depth: u32, held: bool, out: &mut Vec<(Rect, bool)>) {
-    let (m, ink) = (blob.m, &blob.ink);
+    let m = blob.m;
     let Some(r) = trim(m, r) else { return };
     let mut held = held;
     if depth < MAX_DEPTH {
         let rows = segments(&m.row_profile(r), (coverage * r.w as f32) as usize, min_seg.1);
-        if rows.len() > 1 && !ends_at_panel(m, r, &rows, true, min_seg.0) && lined(blob, r, &rows, true, min_seg.0) {
-            if shared_balloon(blob, r, &rows, true, min_seg.0 / 2) {
+        // A band a panel runs on across (its side frame unbroken) keeps the blob whole, whichever
+        // check refuses it: the second round must not cut it either.
+        let holds = |segs: &[(usize, usize)], rows: bool| {
+            segs.len() > 1 && lined(blob, r, segs, rows, if rows { min_seg.0 } else { min_seg.1 }) && enclosed(blob, r, segs, rows)
+        };
+        if holds(&rows, true) {
+            held = true;
+        }
+        // A gap closed off at one end by a frame line running across it is a T-junction: the gutter
+        // ends at a panel spanning both sides of it. When that panel's side frame runs the blob's
+        // whole length, cut along it first.
+        let t_junction = |segs: &[(usize, usize)], rows: bool| {
+            blob.frame_lines && closed_ends(blob, r, segs, rows) == 1 && frame_line(blob, r, rows, min_seg).is_some()
+        };
+        if rows.len() > 1 && !ends_at_panel(m, r, &rows, true, min_seg.0) && lined(blob, r, &rows, true, min_seg.0) && !t_junction(&rows, true) {
+            if enclosed(blob, r, &rows, true) || shared_balloon(blob, r, &rows, true, min_seg.0 / 2) {
                 held = true;
             } else {
                 for (a, b) in rows {
@@ -1438,8 +1502,11 @@ fn split(blob: &Blob, r: Rect, coverage: f32, min_seg: (usize, usize), depth: u3
             }
         }
         let cols = segments(&m.col_profile(r), (coverage * r.h as f32) as usize, min_seg.0);
-        if cols.len() > 1 && !ends_at_panel(m, r, &cols, false, min_seg.1) && lined(blob, r, &cols, false, min_seg.1) {
-            if shared_balloon(blob, r, &cols, false, min_seg.1 / 2) {
+        if holds(&cols, false) {
+            held = true;
+        }
+        if cols.len() > 1 && !ends_at_panel(m, r, &cols, false, min_seg.1) && lined(blob, r, &cols, false, min_seg.1) && !t_junction(&cols, false) {
+            if enclosed(blob, r, &cols, false) || shared_balloon(blob, r, &cols, false, min_seg.1 / 2) {
                 held = true;
             } else {
                 for (a, b) in cols {
@@ -1449,8 +1516,8 @@ fn split(blob: &Blob, r: Rect, coverage: f32, min_seg: (usize, usize), depth: u3
                 return;
             }
         }
-        for vertical in [true, false] {
-            if let Some(c) = frame_line(m, ink, r, vertical, min_seg) {
+        for vertical in [true, false].into_iter().filter(|_| blob.frame_lines) {
+            if let Some(c) = frame_line(blob, r, vertical, min_seg) {
                 let c = c as u32;
                 let pieces = if vertical {
                     [Rect { w: c, ..r }, Rect { x: r.x + c, w: r.w - c, ..r }]
@@ -1471,7 +1538,7 @@ fn split(blob: &Blob, r: Rect, coverage: f32, min_seg: (usize, usize), depth: u3
 /// clouds in a panel that bleeds off the page) by ragged art. Lines `a..b` across `r` are blank
 /// (`rows`: they are rows); whether the lines just before `a` and just after `b` hold ink along
 /// most of `t0..t1`.
-fn lined_band(ink: &Mask, r: Rect, (a, b): (usize, usize), (t0, t1): (usize, usize), rows: bool) -> bool {
+fn lined_band(ink: &Mask, r: Rect, (a, b): (usize, usize), (t0, t1): (usize, usize), rows: bool, one_side: bool) -> bool {
     // A border within this many lines of the gap, and along this share of it.
     const NEAR: usize = 4;
     const SHARE: f32 = 0.6;
@@ -1480,10 +1547,15 @@ fn lined_band(ink: &Mask, r: Rect, (a, b): (usize, usize), (t0, t1): (usize, usi
         let (x, y) = if rows { (t, u) } else { (u, t) };
         ink.at(r.x as usize + x, r.y as usize + y)
     };
-    let side = |us: std::ops::Range<usize>| {
-        (t0..t1).filter(|&t| us.clone().any(|u| at(t, u))).count() as f32 >= SHARE * (t1 - t0) as f32
-    };
-    side(a.saturating_sub(NEAR)..a) && side(b..(b + NEAR).min(span))
+    // (A panel with no frame on that side, bleeding or open, leaves the gutter lined by the other
+    // panel's frame alone: one straight line along nearly all of it, not art that comes close.
+    // `one_side`: allowed for a gutter across a whole blob, not for a stretch of blank in the art
+    // beside a frame line, which letters and edges in the art can line.)
+    const ONE_SIDE: f32 = 0.9;
+    let side = |us: std::ops::Range<usize>| (t0..t1).filter(|&t| us.clone().any(|u| at(t, u))).count() as f32 / (t1 - t0).max(1) as f32;
+    let straight = |us: std::ops::Range<usize>| us.map(|u| side(u..u + 1)).fold(0.0, f32::max);
+    let (before, after) = (a.saturating_sub(NEAR)..a, b..(b + NEAR).min(span));
+    (side(before.clone()) >= SHARE && side(after.clone()) >= SHARE) || (one_side && straight(before).max(straight(after)) >= ONE_SIDE)
 }
 
 /// Runs of covered pixels along line `mid` across `r`: what crosses a gutter there.
@@ -1542,6 +1614,35 @@ fn balloon_sides(blob: &Blob, r: Rect, (a, b): (usize, usize), (t0, t1): (usize,
     (share(a.saturating_sub(k), a), share(b, (b + k).min(span)))
 }
 
+/// Whether a gap between `segs` is closed off at both ends by a frame line running straight across
+/// it: a blank band inside one panel (the rail of a fence, a shelf), not a gutter. Between two
+/// panels the side frames break at the gutter. (`rows`: the gaps are rows.)
+fn enclosed(blob: &Blob, r: Rect, segs: &[(usize, usize)], rows: bool) -> bool {
+    closed_ends(blob, r, segs, rows) == 2
+}
+
+/// How many ends (0 to 2) of the most closed-off gap between `segs` a frame line runs straight
+/// across (see [`enclosed`]).
+fn closed_ends(blob: &Blob, r: Rect, segs: &[(usize, usize)], rows: bool) -> usize {
+    let len = if rows { r.w } else { r.h } as usize;
+    // Lines across the band at `t` (from `r`'s side) not paper anywhere in the band.
+    let solid = |t: usize, (a, b): (usize, usize)| {
+        (a..b).all(|u| {
+            let (x, y) = if rows { (t, u) } else { (u, t) };
+            !blob.paper.at(r.x as usize + x, r.y as usize + y)
+        })
+    };
+    // At each end, within a little of the blob's edge.
+    const NEAR: usize = 10;
+    segs.windows(2)
+        .map(|w| {
+            let gap = (w[0].1, w[1].0);
+            (0..NEAR.min(len)).any(|t| solid(t, gap)) as usize + (len.saturating_sub(NEAR)..len).any(|t| solid(t, gap)) as usize
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Whether every gap between `segs` is lined by borders (see [`lined_band`]).
 /// Each blank stretch of the gap at least `min_len` long must be lined on its own: a gutter
 /// crossed by a panel (an inset, art reaching over) may run on as blank art past it.
@@ -1558,8 +1659,8 @@ fn lined(blob: &Blob, r: Rect, segs: &[(usize, usize)], rows: bool, min_len: usi
             start = b;
         }
         blank.push((start, len));
-        lined_band(ink, r, gap, (0, len), rows)
-            && blank.into_iter().filter(|&(a, b)| b - a >= min_len).all(|stretch| lined_band(ink, r, gap, stretch, rows))
+        lined_band(ink, r, gap, (0, len), rows, true)
+            && blank.into_iter().filter(|&(a, b)| b - a >= min_len).all(|stretch| lined_band(ink, r, gap, stretch, rows, true))
     })
 }
 
@@ -1631,7 +1732,8 @@ fn stands_out(ink: &Mask, r: Rect, vertical: bool, c: usize) -> bool {
 /// or horizontal) across the whole of `r`, with a blank gutter on one side that runs from the
 /// blob's edge to the line and stops there (the gutter between two panels stacked beside a
 /// tall one). Returns its offset into `r`; both sides are at least `min_seg` wide.
-fn frame_line(m: &Mask, ink: &Mask, r: Rect, vertical: bool, min_seg: (usize, usize)) -> Option<usize> {
+fn frame_line(blob: &Blob, r: Rect, vertical: bool, min_seg: (usize, usize)) -> Option<usize> {
+    let (m, ink) = (blob.m, &blob.ink);
     // A scanned line is not perfectly straight: a line counts as inked within this of `c`.
     const TOL: usize = 3;
     let (len, across) = if vertical { (r.w as usize, r.h as usize) } else { (r.h as usize, r.w as usize) };
@@ -1643,7 +1745,71 @@ fn frame_line(m: &Mask, ink: &Mask, r: Rect, vertical: bool, min_seg: (usize, us
     };
     // Gutters are wider than the blank between speed lines.
     let min_gutter = (min_seg.1 / 8).max(3);
-    let line = |c: usize| ink_line(ink, r, vertical, c, min_gutter) && stands_out(ink, r, vertical, c);
+    // Where the line stops short of the blob's ends, nothing of the blob may lie past it: a panel
+    // there (the bottom row under a tall column) would be cut where no line is.
+    let reaches = |c: usize| {
+        let inked = |u: usize| {
+            (c.saturating_sub(TOL)..(c + TOL + 1).min(len)).any(|t| {
+                let (x, y) = if vertical { (t, u) } else { (u, t) };
+                ink.at(r.x as usize + x, r.y as usize + y)
+            })
+        };
+        let covered = |u: usize| {
+            let (x, y) = if vertical { (c, u) } else { (u, c) };
+            m.at(r.x as usize + x, r.y as usize + y)
+        };
+        let (Some(first), Some(last)) = ((0..across).find(|&u| inked(u)), (0..across).rfind(|&u| inked(u))) else { return false };
+        // (Nor may a gutter cross the blob between them, blank on both sides of the line: a line
+        // running on across it is art. A gutter ending at the line, a T-junction, is blank on one
+        // side only.)
+        let blank_side = |u: usize, ts: std::ops::Range<usize>| {
+            let n = ts.len();
+            n > 0
+                && ts
+                    .filter(|&t| {
+                        let (x, y) = if vertical { (t, u) } else { (u, t) };
+                        m.at(r.x as usize + x, r.y as usize + y)
+                    })
+                    .count()
+                    * 10
+                    < n * 3
+        };
+        let side = 2 * TOL + 1;
+        // (A gutter, a few lines tall: a blank band in the art, such as a rail, is thinner.)
+        const GUTTER_LINES: usize = 5;
+        let (left, right) = (0..c.saturating_sub(side), (c + side).min(len)..len);
+        let blank_row = |u: usize| blank_side(u, left.clone()) && blank_side(u, right.clone());
+        // Panels on both sides of the line, above the band and below it: a gutter between two rows
+        // of panels. (Not the margin above one column beside the blank sky of another.)
+        let full_row = |u: usize| !blank_side(u, left.clone()) && !blank_side(u, right.clone());
+        let (lo, hi) = (first + across / 20, last.saturating_sub(across / 20));
+        let crossing_gutter = (lo..hi.saturating_sub(GUTTER_LINES))
+            .any(|u| (u..u + GUTTER_LINES).all(blank_row) && (first..u).any(full_row) && (u + GUTTER_LINES..=last).any(full_row));
+        !crossing_gutter && (0..first).chain(last + 1..across).filter(|&u| covered(u)).count() <= 2 * min_gutter
+    };
+    // A hairline gutter (see [`crate::style`]) along nearly all of `r`, between frame lines: cut
+    // along it. (A double line in the art, a ledge or a belt, runs along part of a panel only.)
+    let hair = |c: usize| {
+        (0..across)
+            .filter(|&u| {
+                (c - 1..=c + 1).any(|t| {
+                    let (x, y) = if vertical { (t, u) } else { (u, t) };
+                    blob.hair.at(r.x as usize + x, r.y as usize + y)
+                })
+            })
+            .count()
+    };
+    if blob.hair.data.iter().any(|&b| b)
+        && let Some(c) = (min_len..len.saturating_sub(min_len))
+            .filter(|&c| ink_line(ink, r, vertical, c, min_gutter) && reaches(c))
+            .map(|c| (c, hair(c)))
+            .filter(|&(_, n)| n * 10 >= across * 8)
+            .max_by_key(|&(_, n)| n)
+            .map(|(c, _)| c)
+    {
+        return Some(c);
+    }
+    let line = |c: usize| ink_line(ink, r, vertical, c, min_gutter) && stands_out(ink, r, vertical, c) && reaches(c);
     // Lines `u` blank from the side `[a, b)` of the blob up to the line and lined by borders, with
     // panels on both sides of them along it. On the far side `[c0, c1)` of the line, right past
     // it, they are covered: the gutter stops at the line.
@@ -1659,7 +1825,8 @@ fn frame_line(m: &Mask, ink: &Mask, r: Rect, vertical: bool, min_seg: (usize, us
             while u + min_across < across && blank(u) {
                 u += 1;
             }
-            if u - start >= min_gutter && lined_band(ink, r, (start, u), (a, b), vertical) && stops(start, u) {
+            // (A gutter, not a wide blank in the art between sound-effect letters.)
+            if (min_gutter..=4 * min_gutter).contains(&(u - start)) && lined_band(ink, r, (start, u), (a, b), vertical, false) && stops(start, u) {
                 return true;
             }
             u += 1;
@@ -1981,6 +2148,7 @@ mod tests {
             padding: 0.0,
             exact_shapes: true,
             rtl,
+            tuning: Default::default(),
         }
     }
 
@@ -2047,7 +2215,7 @@ mod tests {
         page_with(panels).to_luma8()
     }
 
-    // Regression (All-Negro p. 2, 28): a prose page with one small illustration is kept whole,
+    // Regression: a prose page with one small illustration is kept whole,
     // not cut down to the picture.
     #[test]
     fn text_page_is_kept_whole() {
@@ -2058,7 +2226,7 @@ mod tests {
         assert_eq!(p[0].rect, Rect { x: 0, y: 0, w: 1000, h: 1500 });
     }
 
-    // Regression (All-Negro p. 5, 8, 22, 33): a running head above the grid is not a panel and
+    // Regression: a running head above the grid is not a panel and
     // does not make the first panel grow up to it.
     #[test]
     fn running_head_is_left_out() {
@@ -2069,7 +2237,7 @@ mod tests {
         assert!(p.iter().all(|p| p.rect.y >= 140), "{p:?}");
     }
 
-    // Regression (All-Negro p. 41): a caption under a gag cartoon stays with that cartoon, and the
+    // Regression: a caption under a gag cartoon stays with that cartoon, and the
     // cartoon beside it does not take it.
     #[test]
     fn caption_under_a_cartoon_joins_it() {
@@ -2081,7 +2249,7 @@ mod tests {
         assert!(p[1].rect.bottom() <= 610, "right cartoon unchanged: {:?}", p[1].rect);
     }
 
-    // Regression (All-Negro p. 36, 50): caption lines between two rows are all kept, each whole
+    // Regression: caption lines between two rows are all kept, each whole
     // inside one panel, so no text is lost or cut through.
     #[test]
     fn caption_between_rows_is_kept() {
@@ -2097,7 +2265,7 @@ mod tests {
         }
     }
 
-    // Regression (ブラック悪魔): the stack of page edges along the side of a photographed book
+    // Regression: the stack of page edges along the side of a photographed book
     // is dropped, before and after the second round.
     #[test]
     fn page_edge_column_at_the_side_is_dropped() {
@@ -2124,7 +2292,7 @@ mod tests {
         assert_eq!(c[1], r(450, 0, 450, 600));
     }
 
-    // Regression (All-Negro p. 31): a caption block whose lines run on under a neighbour's
+    // Regression: a caption block whose lines run on under a neighbour's
     // slanted outline is widened to take in the rest of the lettering.
     #[test]
     fn caption_box_grows_over_its_lettering() {
