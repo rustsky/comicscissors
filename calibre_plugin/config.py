@@ -78,7 +78,7 @@ class ConfigWidget(QWidget):
                                 'e-ink shows little difference down to about 70.')
         form.addRow('Image quality:', self.quality)
 
-        self.ocr = QCheckBox('Add text layer for dictionary lookup (PDF only, needs Tesseract)', self)
+        self.ocr = QCheckBox('Add text layer for dictionary lookup (PDF, EPUB, KEPUB, AZW3; needs Tesseract)', self)
         self.ocr.setChecked(prefs['ocr'])
         form.addRow(self.ocr)
 

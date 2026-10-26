@@ -1,10 +1,13 @@
 //! Fixed-layout EPUB 3 (also saved as KEPUB for Kobo), and AZW3 for Kindle made from it
 //! with calibre's `ebook-convert`.
 //!
-//! Every page is one screen-sized JPEG on its own fixed-layout page. calibre writes reflowable
+//! Every page is one screen-sized JPEG on its own fixed-layout page, with the words OCR found
+//! laid over it as invisible text, so the reader's dictionary can look them up (the PDF's
+//! text layer, in HTML). calibre writes reflowable
 //! AZW3 only, so the fixed-layout records are added to its header afterwards; Kindles then show
 //! the pages full screen, without margins.
 
+use crate::ocr::PlacedWord;
 use crate::output::TocEntry;
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -23,6 +26,8 @@ pub struct Book<'a> {
     pub width: u32,
     pub height: u32,
     pub rtl: bool,
+    /// The words on each page (none: no text layer).
+    pub texts: &'a [Vec<PlacedWord>],
 }
 
 pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
@@ -51,12 +56,15 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
 <head>
 <title>{title} {n}</title>
 <meta name="viewport" content="width={w}, height={h}"/>
-<style>html, body {{ margin: 0; padding: 0; width: {w}px; height: {h}px; }} img {{ display: block; width: {w}px; height: {h}px; }}</style>
+<style>html, body {{ margin: 0; padding: 0; width: {w}px; height: {h}px; }} img {{ display: block; width: {w}px; height: {h}px; }}
+div.page {{ position: relative; width: {w}px; height: {h}px; }}
+span.w {{ position: absolute; display: block; overflow: hidden; white-space: nowrap; line-height: 1; margin: 0; padding: 0; color: transparent; color: rgba(0,0,0,0); }}</style>
 </head>
-<body><div><img src="../images/{n:05}.jpg" alt="{title} {n}"/></div></body>
+<body><div class="page"><img src="../images/{n:05}.jpg" alt="{title} {n}"/>{text}</div></body>
 </html>
 "#,
-            lang = b.lang
+            lang = b.lang,
+            text = b.texts.get(i).map(|t| text_layer(t)).unwrap_or_default()
         )?;
     }
 
@@ -162,6 +170,39 @@ pub fn write_epub(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
     Ok(())
 }
 
+/// The words of a page as invisible text over its image: each word a box over the word in the
+/// picture, so a tap or a selection there gives the word. Spaces between them keep words apart
+/// for the dictionary.
+fn text_layer(words: &[PlacedWord]) -> String {
+    let mut out = String::new();
+    for word in words.iter().filter(|w| !w.text.trim().is_empty()) {
+        let chars = word.text.chars().count().max(1) as f32;
+        // Letters are about half as wide as high: shrink the font when the word wouldn't fit its box.
+        let size = word.size.min(word.advance / (0.55 * chars)).max(1.0);
+        // The box's top-left from the baseline start; a word running downwards is turned a
+        // quarter clockwise around that corner.
+        let style = if word.down {
+            format!(
+                "left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px;font-size:{size:.1}px;transform:rotate(90deg);transform-origin:0 0;-webkit-transform:rotate(90deg);-webkit-transform-origin:0 0",
+                word.x + word.size * 0.85,
+                word.y,
+                word.advance,
+                word.size
+            )
+        } else {
+            format!(
+                "left:{:.0}px;top:{:.0}px;width:{:.0}px;height:{:.0}px;font-size:{size:.1}px",
+                word.x,
+                word.y - word.size * 0.85,
+                word.advance,
+                word.size
+            )
+        };
+        out.push_str(&format!("<span class=\"w\" style=\"{style}\">{}</span> ", xml_escape(&word.text)));
+    }
+    out
+}
+
 /// Write the pages as an EPUB next to `path`, then convert it to AZW3 with calibre.
 pub fn write_azw3(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
     let convert = ebook_convert().context(
@@ -179,6 +220,10 @@ pub fn write_azw3(path: &Path, pages: &[Vec<u8>], b: &Book) -> Result<()> {
         .args(["--book-producer", "comic-scissors"])
         // The only profile that never resizes images: pages are already sized for the screen.
         .args(["--output-profile", "tablet"])
+        // Keep the text layer's font sizes in pixels, so each word fills its box, and the pages
+        // without the default margins.
+        .arg("--disable-font-rescaling")
+        .args(["--margin-left", "0", "--margin-right", "0", "--margin-top", "0", "--margin-bottom", "0"])
         .output()
         .with_context(|| format!("running {}", convert.display()))?;
     if !out.status.success() {
@@ -345,7 +390,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.epub");
         let toc = [TocEntry { title: "Chapter 1".into(), page: 0 }, TocEntry { title: "Chapter 2".into(), page: 1 }];
-        let book = Book { title: "Tom & Jerry", author: Some("A & B"), toc: &toc, lang: "en", width: 1264, height: 1680, rtl: true };
+        let book = Book { title: "Tom & Jerry", author: Some("A & B"), toc: &toc, lang: "en", width: 1264, height: 1680, rtl: true, texts: &[] };
         write_epub(&path, &[vec![0xff, 0xd8], vec![0xff, 0xd8]], &book).unwrap();
         let mut z = zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap();
         assert_eq!(z.by_index(0).unwrap().name(), "mimetype");
@@ -413,6 +458,16 @@ mod tests {
         // Running it again replaces the records instead of adding more.
         let again = mark_fixed_layout(&out, 1236, 1648).unwrap();
         assert_eq!(again, out);
+    }
+
+    // Each word becomes transparent text over its lettering; a word running down the page is turned.
+    #[test]
+    fn words_are_laid_over_the_page() {
+        let w = |text: &str, down| PlacedWord { x: 100.0, y: 200.0, advance: 120.0, size: 30.0, down, text: text.into() };
+        let html = text_layer(&[w("look<up>", false), w("down", true), w(" ", false)]);
+        assert_eq!(html.matches("<span").count(), 2, "{html}");
+        assert!(html.contains("left:100px;top:174px;width:120px;height:30px") && html.contains(">look&lt;up&gt;</span> "), "{html}");
+        assert!(html.contains("left:126px;top:200px") && html.contains("rotate(90deg)"), "{html}");
     }
 
     #[test]

@@ -19,7 +19,8 @@ from calibre_plugins.comic_scissors.editor import EditorOpener
 from calibre_plugins.comic_scissors.runner import prefs
 
 # Source formats in order of preference.
-SOURCES = ('CBZ', 'CBR', 'CB7', 'ZIP', 'RAR', '7Z', 'PDF')
+# Kindle books last: their images are often smaller than the scans in an archive or PDF.
+SOURCES = ('CBZ', 'CBR', 'CB7', 'ZIP', 'RAR', '7Z', 'PDF', 'AZW3', 'MOBI', 'AZW')
 # Unpacked with calibre's own extractors: the CLI's bsdtar/unar/7z are often missing (always on Windows).
 UNPACK = {'CBR', 'CB7', 'RAR', '7Z'}
 
@@ -86,7 +87,7 @@ class ComicScissorsAction(InterfaceAction):
             info_dialog(
                 self.gui,
                 'Some books skipped',
-                'These books have no CBZ, CBR, CB7 or PDF file:\n\n' + '\n'.join(skipped),
+                'These books have no CBZ, CBR, CB7, PDF or DRM-free AZW3/MOBI file:\n\n' + '\n'.join(skipped),
                 show=True,
             )
 
@@ -180,12 +181,12 @@ def convert(src, fmt, title, opts, notifications=None, abort=None, log=None, on_
         cmd.append('--no-auto-levels')
     if opts['rect_crop']:
         cmd.append('--rect-crop')
-    # The language also goes into EPUB/AZW3 metadata; only PDFs get the OCR text layer.
+    # The language also goes into EPUB/AZW3 metadata; every format but CBZ gets the OCR text layer.
     cmd += ['--lang', opts['lang']]
-    if opts['format'] == 'pdf' and opts['ocr'] and not runner.has_tesseract(env):
+    if opts['format'] != 'cbz' and opts['ocr'] and not runner.has_tesseract(env):
         log('Tesseract not found: converting without the dictionary text layer')
         cmd.append('--no-ocr')
-    elif opts['format'] == 'pdf' and not opts['ocr']:
+    elif opts['format'] != 'cbz' and not opts['ocr']:
         cmd.append('--no-ocr')
     cmd += shlex.split(opts['extra_args'], posix=not iswindows)
     runner.run(cmd, env, log, abort, progress, on_edit=on_edit)

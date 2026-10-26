@@ -58,6 +58,7 @@ pub fn collect_pages(input: &Path, tmp: &Path, pdf_dpi: u32, pb: &ProgressBar) -
         "cbz" | "zip" => extract_zip(input, tmp, pb),
         "cbr" | "rar" | "cb7" | "7z" | "cbt" | "tar" => extract_with_tool(input, tmp, pb),
         "pdf" => render_pdf(input, tmp, pdf_dpi, pb).map(Pages::flat),
+        "azw3" | "azw" | "mobi" | "kf8" => crate::kindle::extract(input, &tmp.join("kindle")).map(Pages::flat),
         _ if is_image(input) => Ok(Pages::flat(vec![input.to_path_buf()])),
         e => bail!("unsupported input type '.{e}'"),
     }

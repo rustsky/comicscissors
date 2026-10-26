@@ -5,6 +5,7 @@ mod edit;
 mod frames;
 mod epub;
 mod input;
+mod kindle;
 mod layout;
 mod ocr;
 mod output;
@@ -43,11 +44,19 @@ enum Format {
     Images,
 }
 
+impl Format {
+    /// Formats that carry the OCR text layer for dictionary lookup.
+    fn has_text(self) -> bool {
+        matches!(self, Format::Pdf | Format::Epub | Format::Kepub | Format::Azw3)
+    }
+}
+
 /// Split comic pages into panels and repack them so they are readable on an e-reader without zooming.
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
-    /// Comic to convert: .pdf, .cbz/.zip, .cbr/.cb7, an image, or a folder of images.
+    /// Comic to convert: .pdf, .cbz/.zip, .cbr/.cb7, a DRM-free Kindle book (.azw3/.mobi), an image,
+    /// or a folder of images.
     input: Option<PathBuf>,
 
     /// Output path (default: <input>_repanel.<ext>, next to the input).
@@ -282,11 +291,11 @@ fn run() -> Result<()> {
     let prompted = args.device.is_none() && args.width.is_none();
     let lang = match &args.lang {
         Some(l) => l.clone(),
-        None if prompted && !args.no_ocr && args.format == Format::Pdf => ocr::prompt()?,
+        None if prompted && !args.no_ocr && args.format.has_text() => ocr::prompt()?,
         None => "en".into(),
     };
-    // OCR text layer: PDF only, and only when Tesseract has the language.
-    let ocr_lang = if args.no_ocr || args.format != Format::Pdf {
+    // OCR text layer (PDF, EPUB, KEPUB, AZW3), only when Tesseract has the language.
+    let ocr_lang = if args.no_ocr || !args.format.has_text() {
         None
     } else {
         match ocr::resolve(&lang) {
@@ -678,9 +687,9 @@ fn run() -> Result<()> {
     let author = args.author.as_deref();
     let toc = table_of_contents(&out_pages, &chapters, lo.cover);
     let pb = progress::spinner("Writing", &out_path.display().to_string());
+    let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
     match args.format {
         Format::Pdf => {
-            let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
             let tag = ocr_lang.as_ref().map(|_| ocr::bcp47(&lang));
             let info = output::DocInfo { title, author, lang: tag.as_deref(), toc: &toc };
             output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, &info)?
@@ -696,6 +705,7 @@ fn run() -> Result<()> {
                 width: device.width,
                 height: device.height,
                 rtl: args.rtl,
+                texts: &texts,
             };
             if args.format == Format::Azw3 {
                 epub::write_azw3(&out_path, &rendered, &book)?

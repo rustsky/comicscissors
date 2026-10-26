@@ -3,7 +3,7 @@
 **Comic & manga panel splitter for e-readers**
 
 Read comics and manga on a Kindle or any other e-reader panel by panel, without zooming.
-ComicScissors detects the panels on each page of a PDF, CBZ, CBR or CB7, cuts them out and
+ComicScissors detects the panels on each page of a PDF, CBZ, CBR, CB7 or DRM-free Kindle book (AZW3, MOBI), cuts them out and
 repacks them onto pages sized for your device: Kindle, Kobo, PocketBook, Boox, Tolino,
 reMarkable and Nook models are built in, and any other screen size works too. The result is a
 PDF, EPUB, KEPUB, AZW3 or CBZ.
@@ -35,7 +35,7 @@ Each [release](https://github.com/rustsky/comicscissors/releases) has one archiv
 binary and picks the right one when it first runs.
 
 Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for e-reader**
-button to a toolbar. Select comics (CBZ, CBR, CB7 or PDF) and click it. A pop-up asks how to read the panels, left to right (comic) or right to left (manga; books tagged *Manga* start as manga), and whether to fix the panels by hand first. The result is added to
+button to a toolbar. Select comics (CBZ, CBR, CB7, PDF, or a DRM-free AZW3/MOBI) and click it. A pop-up asks how to read the panels, left to right (comic) or right to left (manga; books tagged *Manga* start as manga), and whether to fix the panels by hand first. The result is added to
 the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to the e-reader with
 *Send to device*. An original file is never replaced: when the book already has an original file
 of the output type (a PDF comic repacked to PDF), the result is saved as the data file
@@ -74,6 +74,7 @@ comic-scissors vol1.cbz -d oasis --title "Vol. 1" --author "Jane Doe"   # metada
 comic-scissors episodes.cbz -d kobo-libra-colour --webtoon   # vertical scroll comic
 comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
 comic-scissors mycomic.cbr -d kobo-libra-colour  # Kobo, PocketBook, Boox, Tolino, reMarkable, Nook
+comic-scissors mycomic.azw3 -d kobo-libra-colour -f epub   # from a DRM-free Kindle book
 comic-scissors --list-devices
 comic-scissors in.cbz --width 1072 --height 1448 --ppi 300   # custom screen
 ```
@@ -131,9 +132,9 @@ installed (it is found on PATH or in calibre's default install folder).
    row stay side by side when they fit. Otherwise they are stacked. Each e-reader page is filled
    with as many panels as fit, and then scaled up to use any leftover space. With `--overview`, each
    original page is first shown whole on its own page, then its panels follow.
-4. **Text layer** (PDF only): each page is OCR'd with Tesseract, and every recognised word is
+4. **Text layer** (PDF, EPUB, KEPUB, AZW3): each page is OCR'd with Tesseract, and every recognised word is
    placed as invisible text exactly over its lettering, following the panel's crop, scale and
-   rotation. Long-pressing a word on the Kindle then selects it for dictionary lookup,
+   rotation (in EPUB/KEPUB/AZW3 as transparent, absolutely positioned text over the page image). Long-pressing a word on the e-reader then selects it for dictionary lookup,
    highlighting and search. ALL-CAPS lettering is stored in lowercase, and words hyphenated
    across lines are joined, so lookups find dictionary entries. The language is set with
    `--lang` (default `en`), and `--no-ocr` turns this off. OCR adds about 1 s per page per
