@@ -391,7 +391,7 @@ fn merge_pieces(panels: &mut Vec<Panel>, edges: &Edges, w: u32, h: u32) -> bool 
 }
 
 /// The outline of `r` less the boxes `holes`, at a quarter of the page resolution.
-fn outline_without(r: &Rect, holes: &[Rect]) -> Shape {
+pub(crate) fn outline_without(r: &Rect, holes: &[Rect]) -> Shape {
     const SCALE: u32 = 4;
     let (mw, mh) = ((r.w / SCALE).max(1) as usize, (r.h / SCALE).max(1) as usize);
     let mut m = Mask::new(mw, mh);

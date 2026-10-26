@@ -1,6 +1,7 @@
 mod detect;
 mod devices;
 mod edges;
+mod edit;
 mod frames;
 mod epub;
 mod input;
@@ -207,6 +208,29 @@ struct Args {
     #[arg(long)]
     debug_dir: Option<PathBuf>,
 
+    /// Fix the detected panels by hand before cutting: opens a panel editor in the browser, and
+    /// the book is cut when its Cut button is pressed.
+    #[arg(long)]
+    edit: bool,
+
+    /// With --edit: don't open a browser; print `@@edit <url>` for a front end to show the editor.
+    #[arg(long, hide = true)]
+    edit_url_only: bool,
+
+    /// Detect the panels, write them to this JSON file and stop (fix them, then cut with --panels).
+    #[arg(long, value_name = "FILE", conflicts_with = "panels")]
+    detect_only: Option<PathBuf>,
+
+    /// Cut with the panels in this JSON file (from --detect-only) instead of detecting them.
+    #[arg(long, value_name = "FILE")]
+    panels: Option<PathBuf>,
+
+    /// Keep hand-fixed panels with the book in this JSON file: when it exists and fits the book's
+    /// pages, cut with its panels instead of detecting them; after --edit, save the panels to it.
+    /// The panels are in the source pages' pixels, so the file serves any device and format.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["panels", "detect_only"])]
+    keep_panels: Option<PathBuf>,
+
     /// With --debug-dir: don't open the review page.
     #[arg(long)]
     no_review: bool,
@@ -343,6 +367,8 @@ fn run() -> Result<()> {
     if let Some(d) = &args.debug_dir {
         std::fs::create_dir_all(d)?;
     }
+    // Panels fixed by hand in an earlier run, when they are for these pages.
+    let panels_file = args.panels.clone().or_else(|| args.keep_panels.clone().filter(|k| k.exists() && edit::fits(k, &pages)));
     let pb = progress::bar("Detecting", pages.len(), if ocr_lang.is_some() { "pages (panels + text)" } else { "pages" });
     struct Analysed {
         path: PathBuf,
@@ -369,7 +395,10 @@ fn run() -> Result<()> {
                 }
             };
             // A webtoon piece is one panel (or a few stacked ones) already.
-            let panels = if webtoon {
+            let panels = if panels_file.is_some() {
+                // Read from the panel file below.
+                Vec::new()
+            } else if webtoon {
                 let rect = detect::Rect { x: 0, y: 0, w: img.width(), h: img.height() };
                 vec![detect::Panel::new(rect, None, Vec::new())]
             } else {
@@ -400,6 +429,15 @@ fn run() -> Result<()> {
     if analysed.is_empty() {
         bail!("no readable pages");
     }
+    // Panels from a file replace the detection (and every pass that refines it).
+    let from_file = panels_file.is_some();
+    if let Some(path) = &panels_file {
+        let sources: Vec<(PathBuf, u32, u32)> = analysed.iter().map(|a| (a.path.clone(), a.width, a.height)).collect();
+        for (a, panels) in analysed.iter_mut().zip(edit::read(path, &sources)?) {
+            a.panels = panels;
+        }
+        println!("Panels read from {}", path.display());
+    }
 
     // Book-level check: a panel much bigger than the book's typical one, on a page with
     // other panels, may be several panels merged.
@@ -408,8 +446,8 @@ fn run() -> Result<()> {
         .flat_map(|a| a.panels.iter().map(move |p| p.rect.area() as f32 / (a.width * a.height) as f32))
         .collect();
     fractions.sort_by(f32::total_cmp);
-    let median = fractions[fractions.len() / 2];
-    for a in &mut analysed {
+    let median = fractions.get(fractions.len() / 2).copied().unwrap_or(1.0);
+    for a in analysed.iter_mut().filter(|_| !from_file) {
         let page_area = (a.width * a.height) as f32;
         if a.panels.len() > 1 {
             for p in &mut a.panels {
@@ -433,7 +471,7 @@ fn run() -> Result<()> {
     }
 
     // Second round on pages with doubtful panels.
-    if !args.no_refine && low_before > 0 {
+    if !args.no_refine && !from_file && low_before > 0 {
         let todo: Vec<usize> = (0..analysed.len()).filter(|&i| std::env::var("CS_FORCE").is_ok() || analysed[i].panels.iter().any(|p| p.is_low())).collect();
         let pb = progress::bar("Refining", todo.len(), "pages");
         let results: Vec<(usize, Vec<detect::Panel>, refine::Stats)> = todo
@@ -468,7 +506,7 @@ fn run() -> Result<()> {
 
     // Page layouts the book uses, learned from its confident pages: panels cut in two along one
     // of their cells are merged back.
-    if !webtoon {
+    if !webtoon && !from_file {
         let lib = template::learn(&analysed.iter().map(|a| (a.width, a.height, a.panels.as_slice())).collect::<Vec<_>>());
         let merged: usize = analysed
             .iter_mut()
@@ -488,7 +526,7 @@ fn run() -> Result<()> {
     // Each page's pattern: neighbours with no frame line or gutter between are one panel. The
     // pattern's preset adjusts the book's settings for the page; when it changes them, the page
     // is detected again with them.
-    if !webtoon {
+    if !webtoon && !from_file {
         let pb = progress::bar("Patterns", analysed.len(), "pages");
         let found: Vec<(Vec<detect::Panel>, pattern::Pattern, bool, Option<pattern::Pattern>)> = analysed
             .par_iter()
@@ -545,6 +583,22 @@ fn run() -> Result<()> {
         }
         let counts: Vec<String> = counts.iter().map(|(p, n)| format!("{} {n}", p.name())).collect();
         println!("Page patterns: {}; {merged} panel(s) without a frame or gutter apart merged", counts.join(", "));
+    }
+
+    if let Some(path) = &args.detect_only {
+        edit::write(path, &analysed.iter().map(|a| (a.path.clone(), a.width, a.height, a.panels.clone())).collect::<Vec<_>>())?;
+        println!("Panels written to {}", path.display());
+        return Ok(());
+    }
+    if args.edit {
+        progress::stage("Editing");
+        let mut pages: Vec<edit::EditPage> =
+            analysed.iter_mut().map(|a| edit::EditPage { source: &a.path, width: a.width, height: a.height, panels: &mut a.panels }).collect();
+        edit::serve(&input, args.rtl, !args.edit_url_only, &mut pages)?;
+        if let Some(path) = &args.keep_panels {
+            edit::write(path, &analysed.iter().map(|a| (a.path.clone(), a.width, a.height, a.panels.clone())).collect::<Vec<_>>())?;
+            println!("Panels saved to {}", path.display());
+        }
     }
 
     if let Some(d) = &args.debug_dir {

@@ -178,7 +178,7 @@ impl Panel {
 }
 
 /// Panel outline: a bit mask at analysis resolution placed in page coordinates.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
     /// Page coordinates of the mask's top-left corner.
     ox: f32,

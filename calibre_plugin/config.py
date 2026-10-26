@@ -1,4 +1,6 @@
-"""Plugin settings: e-reader, output format, language and extra CLI flags."""
+"""Plugin settings: e-reader, output format, language and extra CLI flags.
+
+Manga or comic and the panel editor are asked on each repack instead (see dialog.py)."""
 
 from qt.core import QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QWidget
 
@@ -84,10 +86,6 @@ class ConfigWidget(QWidget):
         self.lang.setPlaceholderText('en, fr, de, es, ja, fa or a Tesseract code')
         form.addRow('Comic language:', self.lang)
 
-        self.rtl = QCheckBox('Manga: read panels right to left', self)
-        self.rtl.setChecked(prefs['rtl'])
-        form.addRow(self.rtl)
-
         self.webtoon = QCheckBox('Webtoon: vertical scroll comic (found automatically for very tall pages)', self)
         self.webtoon.setToolTip('Joins the slices, cuts between panels at background gaps and shows them at screen width.')
         self.webtoon.setChecked(prefs['webtoon'])
@@ -139,7 +137,6 @@ class ConfigWidget(QWidget):
         prefs['quality'] = self.quality.value()
         prefs['ocr'] = self.ocr.isChecked()
         prefs['lang'] = self.lang.text().strip() or 'en'
-        prefs['rtl'] = self.rtl.isChecked()
         prefs['overview'] = self.overview.isChecked()
         prefs['webtoon'] = self.webtoon.isChecked()
         prefs['cover'] = self.cover.isChecked()

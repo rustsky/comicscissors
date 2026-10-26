@@ -44,8 +44,16 @@ pub fn serve(dir: &Path, input: &Path, pages: &[Page]) -> Result<()> {
     Ok(())
 }
 
-/// Answer one request. Returns true when the review is done.
-fn handle(mut stream: TcpStream, dir: &Path, pages: &[Page], state: &str) -> Result<bool> {
+/// One HTTP request: method, path, query string and body.
+pub(crate) struct Request {
+    pub method: String,
+    pub path: String,
+    pub query: String,
+    pub body: Vec<u8>,
+}
+
+/// Read one request from a browser.
+pub(crate) fn read_request(stream: &TcpStream) -> Result<Request> {
     // A browser may open a connection it never uses: don't wait on it forever.
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -68,7 +76,20 @@ fn handle(mut stream: TcpStream, dir: &Path, pages: &[Page], state: &str) -> Res
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    Ok(Request { method: method.into(), path: path.into(), query: query.into(), body })
+}
 
+/// Send a response and close.
+pub(crate) fn respond(mut stream: TcpStream, status: &str, kind: &str, content: &[u8]) -> Result<()> {
+    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", content.len())?;
+    stream.write_all(content)?;
+    Ok(())
+}
+
+/// Answer one request. Returns true when the review is done.
+fn handle(stream: TcpStream, dir: &Path, pages: &[Page], state: &str) -> Result<bool> {
+    let req = read_request(&stream)?;
+    let (method, path, query, body) = (req.method.as_str(), req.path.as_str(), req.query.as_str(), req.body);
     let mut done = false;
     let (status, kind, content): (&str, &str, Vec<u8>) = match (method, path) {
         ("GET", "/") => ("200 OK", "text/html; charset=utf-8", PAGE.as_bytes().to_vec()),
@@ -95,8 +116,7 @@ fn handle(mut stream: TcpStream, dir: &Path, pages: &[Page], state: &str) -> Res
         }
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     };
-    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", content.len())?;
-    stream.write_all(&content)?;
+    respond(stream, status, kind, &content)?;
     Ok(done)
 }
 
@@ -126,7 +146,7 @@ fn keep_source(dir: &Path, n: usize, source: &Path) -> Result<()> {
 
 /// The page without outlines, as JPEG (the original may be TIFF or another format browsers
 /// don't show).
-fn source_jpeg(source: &Path) -> Result<Vec<u8>> {
+pub(crate) fn source_jpeg(source: &Path) -> Result<Vec<u8>> {
     let img = crate::output::load_image(source)?;
     let mut out = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(img.to_rgb8()).write_to(&mut out, image::ImageFormat::Jpeg)?;
@@ -179,7 +199,7 @@ fn state_json(dir: &Path, input: &Path, pages: &[Page]) -> String {
     )
 }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -197,7 +217,7 @@ fn json_str(s: &str) -> String {
     out
 }
 
-fn open_browser(url: &str) {
+pub(crate) fn open_browser(url: &str) {
     let result = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).spawn()
     } else if cfg!(windows) {
