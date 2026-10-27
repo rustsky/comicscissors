@@ -112,6 +112,11 @@ class ConfigWidget(QWidget):
         self.rect_crop.setChecked(prefs['rect_crop'])
         form.addRow(self.rect_crop)
 
+        self.title_suffix = QLineEdit(prefs['title_suffix'], self)
+        self.title_suffix.setToolTip('When the book already has an original file of the output format (e.g. a CBZ repacked to CBZ),\n'
+                                     'the result goes to a copy of the book whose title ends with this.')
+        form.addRow('Title suffix for copies:', self.title_suffix)
+
         self.extra_args = QLineEdit(prefs['extra_args'], self)
         self.extra_args.setPlaceholderText('e.g. -s 1.0 --gamma 1.4 --rotate')
         form.addRow('Extra options:', self.extra_args)
@@ -143,4 +148,5 @@ class ConfigWidget(QWidget):
         prefs['auto_levels'] = self.auto_levels.isChecked()
         prefs['rect_crop'] = self.rect_crop.isChecked()
         prefs['extra_args'] = self.extra_args.text().strip()
+        prefs['title_suffix'] = self.title_suffix.text() or ' (repanel)'
         prefs['binary'] = self.binary.text().strip()

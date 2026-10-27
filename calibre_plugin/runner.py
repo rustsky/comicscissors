@@ -34,6 +34,8 @@ prefs.defaults['custom_height'] = 1680
 prefs.defaults['custom_ppi'] = 300
 prefs.defaults['custom_color'] = False
 prefs.defaults['extra_args'] = ''
+# Added to the title of the copy that holds a repack in the original's format (CBZ to CBZ).
+prefs.defaults['title_suffix'] = ' (repanel)'
 prefs.defaults['binary'] = ''  # empty: the binary bundled with the plugin, then PATH
 
 _bundled = None
