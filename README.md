@@ -1,12 +1,10 @@
 # ComicScissors
 
-**Comic & manga panel splitter for e-readers**
+**Comic and manga panel splitter for e-readers**
 
-Read comics and manga on a Kindle or any other e-reader panel by panel, without zooming.
-ComicScissors detects the panels on each page of a PDF, CBZ, CBR, CB7 or DRM-free Kindle book (AZW3, MOBI), cuts them out and
-repacks them onto pages sized for your device: Kindle, Kobo, PocketBook, Boox, Tolino,
-reMarkable and Nook models are built in, and any other screen size works too. The result is a
-PDF, EPUB, KEPUB, AZW3 or CBZ.
+ComicScissors cuts the panels out of each comic page and puts them on pages the size of your
+e-reader screen. You read panel by panel, without zooming.
+
 It runs as a command line tool on macOS, Windows and Linux, or as a Calibre plugin.
 
 ![A comic page with five detected panels, repacked onto three Kindle Paperwhite pages](docs/demo.jpg)
@@ -14,164 +12,177 @@ It runs as a command line tool on macOS, Windows and Linux, or as a Calibre plug
 <sub>Sample page: *America's Best Comics* #18 (1946), "The Black Terror", art by Ed Moritz.
 Public domain, via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:AmericasBestComics1804.jpg).</sub>
 
-## Build
+## Features
+
+- **Input:** PDF, CBZ, CBR, CB7, DRM-free Kindle books (AZW3, MOBI), an image, or a folder of images.
+- **Output:** PDF, EPUB, KEPUB, AZW3 or CBZ, sized for your e-reader.
+- **Devices:** Kindle, Kobo, PocketBook, Boox, Tolino, reMarkable and Nook models are built in.
+  Any other screen size works too.
+- **Manga:** reads panels right to left.
+- **Dictionary:** OCR adds the words of the speech balloons as invisible text, so you can look them up.
+- **Final touch:** check and fix the panels in a panel editor before the book is cut.
+- **Webtoons:** cuts vertical scroll comics between their panels.
+
+## Final touch: the panel editor
+
+Before the cut, you can check and fix the panels yourself. In Calibre, select **Final touch (open
+panel editor)** in the pop-up. On the command line, use `--edit`.
+The editor shows every page with its panels. Panels that the tool is not sure about are marked.
+
+![The panel editor: a page with its numbered panels, one panel selected, and the tools](docs/editor.jpg)
+
+In the editor you can:
+
+- move and resize a panel;
+- draw a new panel, or delete one;
+- merge panels, or split a panel along a line;
+- click the panels in reading order;
+- keep a page whole;
+- trace a panel that is not a rectangle: click around its edge (key T).
+
+Click **Cut the book** to cut the book with your panels. In Calibre, closing the editor window
+also cuts the book.
+
+ComicScissors keeps your fixes with the book. Later conversions, for any device or format, use the
+same panels. Calibre keeps them as the data file `comicscissors_panels.json`. On the command line,
+use `--keep-panels book.panels.json`.
+
+To fix panels in two steps, `--detect-only panels.json` writes the panels to a file and stops.
+`--panels panels.json` then cuts with that file.
+
+## Install
+
+### Calibre plugin
+
+1. Download `comic-scissors-<version>-calibre-plugin.zip` from the
+   [releases](https://github.com/rustsky/comicscissors/releases). It works on all platforms.
+2. In Calibre, open *Preferences → Plugins → Load plugin from file* and select the zip.
+3. Add the **Repack for e-reader** button to a toolbar.
+
+The plugin includes the tool. Calibre supplies the PDF renderer, the CBR/CB7 unpacker and the
+AZW3 converter.
+
+### Command line
+
+Download the archive for your platform from the
+[releases](https://github.com/rustsky/comicscissors/releases), or build the tool:
 
 ```sh
-cargo build --release
-# binary: target/release/comic-scissors
+cargo build --release      # the tool is target/release/comic-scissors
 ```
 
-PDF input needs `mutool` (MuPDF) or `pdftoppm` (Poppler) on PATH (`brew install mupdf`).
-CBR/CB7 input uses `bsdtar` (built into macOS), `unar` or `7z`.
-The dictionary text layer needs Tesseract (`brew install tesseract`). English is included; for
-other languages, run `brew install tesseract-lang`.
+Some inputs and outputs need other tools:
 
-## Calibre plugin
+| For | You need |
+|---|---|
+| PDF input | `mutool` (MuPDF) or `pdftoppm` (Poppler): `brew install mupdf` |
+| CBR and CB7 input | `bsdtar` (part of macOS), `unar` or `7z` |
+| AZW3 output | Calibre (`ebook-convert`) |
+| Dictionary text | Tesseract: `brew install tesseract`, plus `brew install tesseract-lang` for languages other than English |
 
-Each [release](https://github.com/rustsky/comicscissors/releases) has one archive per platform
-(`linux-x86_64`, `macos-universal`, `windows-x86_64`) that holds the `comic-scissors` CLI and
-`comic-scissors-calibre-plugin.zip`. The plugin includes the same binary.
-`comic-scissors-<version>-calibre-plugin.zip` is the plugin for all three platforms: it holds every
-binary and picks the right one when it first runs.
+## Use with Calibre
 
-Install it with *Preferences → Plugins → Load plugin from file*, then add the **Repack for e-reader**
-button to a toolbar. Select comics (CBZ, CBR, CB7, PDF, or a DRM-free AZW3/MOBI) and click it. A pop-up has everything for the repack on one page: how to read the panels, left to right (comic) or right to left (manga; books tagged *Manga* start as manga), *Final touch* to fix the panels in the panel editor first, and the settings below them. The result is added to
-the same book as a new format (e.g. a CBZ book gets a PDF), so it can be sent to the e-reader with
-*Send to device*. An original file is never replaced: when the book already has an original file
-of the output type (a CBZ comic repacked to CBZ), the result goes to a copy of the book with the
-same metadata and cover, titled *Title (repanel)* (the suffix is set in the pop-up). Repacking
-again replaces only the earlier result.
-The settings choose the e-reader (or a custom screen size), the output format, the image quality, the language, full-page overviews, webtoon mode, the cover page, auto contrast and extra CLI flags. The book's title and authors from the library go into the output's metadata.
+1. Select one or more comics.
+2. Click **Repack for e-reader**.
+3. In the pop-up, select how to read the panels: left to right (comic) or right to left (manga).
+   Books with the tag *Manga* start as manga.
+4. Optional: select **Final touch (open panel editor)** to fix the panels before the cut
+   (see [Final touch](#final-touch-the-panel-editor)).
+5. Check the settings below: e-reader, output format, quality, language and more.
+6. Click **Repack**.
 
-PDFs are rendered with the Poppler tools bundled in Calibre, and CBR/CB7 files are unpacked by
-Calibre, and AZW3 is made with Calibre's own `ebook-convert`, so nothing else needs to be installed. The text layer still needs Tesseract. Without it,
-the plugin converts without the text layer.
+Calibre adds the result to the book as a new format, for example a PDF next to the CBZ.
+Use *Send to device* to copy it to your e-reader.
 
-Releases: bump `version` in `Cargo.toml`, commit, then `git tag v<version> && git push --tags`.
-CI builds the three archives and the all-platform plugin zip, and publishes the release. To build
-an archive locally:
+Calibre never replaces an original file. If the book already has an original file in the output
+format (for example a CBZ repacked to CBZ), the result goes to a copy of the book. The copy has
+the title *Title (repanel)*. You can change this suffix in the pop-up. A new repack replaces only
+the earlier result.
 
-```sh
-cargo build --release
-python3 scripts/package.py --binary target/release/comic-scissors --platform macos-arm64   # -> dist/
-```
-
-Detection regressions are tested on synthetic pages (`src/synth.rs`) that redraw the failing book
-pages with plain shapes, since real pages can't go into the repository. `scripts/synthetic_pages.sh`
-writes them out as PNGs, each with a copy showing the detected panels, to `target/synthetic/`.
-
-## Use
+## Use from the command line
 
 ```sh
-comic-scissors mycomic.cbz                       # asks which e-reader you have and the comic's language
-comic-scissors mycomic.pdf -d paperwhite-5       # -> mycomic_repanel.pdf
-comic-scissors pages/ -d kindle-11 -f cbz        # folder of images -> CBZ
-comic-scissors mycomic.cbz -d kobo-libra-colour -f kepub   # -> mycomic_repanel.kepub.epub
-comic-scissors mycomic.cbz -d paperwhite-5 -f azw3        # Kindle book (needs calibre)
-comic-scissors manga.cbz -d oasis --rtl --print-height 7.2 --lang ja
-comic-scissors mycomic.cbz -d kindle-11 --overview  # each full page, then its panels
-comic-scissors vol1.cbz -d oasis --title "Vol. 1" --author "Jane Doe"   # metadata
-comic-scissors episodes.cbz -d kobo-libra-colour --webtoon   # vertical scroll comic
-comic-scissors bd.cbz -d paperwhite-5 --lang fr       # French text layer
-comic-scissors mycomic.cbr -d kobo-libra-colour  # Kobo, PocketBook, Boox, Tolino, reMarkable, Nook
-comic-scissors mycomic.azw3 -d kobo-libra-colour -f epub   # from a DRM-free Kindle book
+comic-scissors mycomic.cbz                          # asks for your e-reader and the comic's language
+comic-scissors mycomic.pdf -d paperwhite-5          # writes mycomic_repanel.pdf
+comic-scissors manga.cbz -d oasis --rtl --lang ja   # manga, Japanese text
+comic-scissors mycomic.cbz -d kobo-libra-colour -f kepub
+comic-scissors mycomic.cbz -d paperwhite-5 --edit   # fix the panels in the editor first
+comic-scissors pages/ -d kindle-11 -f cbz           # a folder of images
 comic-scissors --list-devices
-comic-scissors in.cbz --width 1072 --height 1448 --ppi 300   # custom screen
+comic-scissors in.cbz --width 1072 --height 1448 --ppi 300   # a screen that is not in the list
 ```
 
-Copy the output to the e-reader over USB (on a Kindle, into its `documents` folder).
+Copy the result to the e-reader over USB. On a Kindle, put it in the `documents` folder.
 Each page is exactly the size of the screen.
 
-| Format | Best for |
+### Output formats
+
+| Format | Use it for |
 |---|---|
-| `pdf` (default) | every e-reader; the only format with the dictionary text layer |
-| `epub` | Kobo, PocketBook, Tolino, Boox, Apple Books; Send to Kindle turns it into a Kindle book |
-| `kepub` | Kobo (faster page turns than EPUB) |
-| `azw3` | Kindle over USB: shown full screen as a comic, with cover and reading progress |
-| `cbz` | comic reader apps (KOReader, Panels, ...) |
+| `pdf` (default) | All e-readers. On a Kindle, dictionary lookup works only in PDF. |
+| `epub` | Kobo, PocketBook, Tolino, Boox, Apple Books. Send to Kindle turns it into a Kindle book. |
+| `kepub` | Kobo. Pages turn faster than in EPUB. |
+| `azw3` | Kindle over USB. Shown full screen, with cover and reading progress. Needs Calibre. |
+| `cbz` | Comic reader apps such as KOReader and Panels. |
 
-EPUB and KEPUB are fixed-layout EPUB 3 (one image per page, right-to-left page turns with
-`--rtl`). AZW3 is converted from that EPUB with calibre's `ebook-convert`, which must be
-installed (it is found on PATH or in calibre's default install folder).
+EPUB and KEPUB are fixed-layout EPUB 3 books with one image per page.
 
-## How it works
-
-1. **Input**: PDF pages are rendered at `--pdf-dpi`. Archives are extracted, and images are
-   sorted in natural order (`p2` comes before `p10`).
-2. **Panel detection**: the paper colour is the median of the page edge. Everything that differs
-   from it by more than `--threshold` counts as ink. Paper reachable from the page edge, plus thin,
-   long strips of paper, form the gutters. Everything else becomes a solid blob, with each panel's
-   interior filled in. Each blob is one panel candidate. When a speech balloon crosses a gutter and
-   joins two panels, the blob is cut along lines that are mostly empty (`--split-coverage`). Panels
-   are then put in reading order: rows top to bottom, then left to right, or right to left with
-   `--rtl`. Small regions such as page numbers are dropped.
-
-   **Confidence and second round.** Every panel gets a confidence score built from
-   simple checks: a notched outline, a cut at a speech balloon, a paper-coloured gutter-like
-   line inside it, little drawn border, tiny or sliver-shaped, or 1.5×/2.5× bigger than the
-   book's median panel. Doubtful panels get a second, stricter search at full resolution
-   for a straight gutter at any angle within ±12° of horizontal or vertical. A gutter counts
-   only if the line is at least 90% paper with a dark border line close by on *both* sides,
-   so caption boxes and horizons are not cut. If no gutter is found, the "gutter inside" and
-   "bigger than usual" doubts are cleared. Small doubtful fragments (title lettering) are
-   merged into the nearest panel, and slivers along the page edge (scan debris) are dropped.
-   Panels that stay doubtful are listed for review. `--no-refine` skips this round.
-
-   Each panel keeps its outline (the convex hull of its blob), so slanted and irregular panels
-   are cut out exactly and slivers of neighbouring panels are painted white. Use `--rect-crop`
-   to crop plain bounding boxes instead.
-   **Webtoons** (`--webtoon`, chosen automatically when pages are over 3× taller than wide):
-   vertical-scroll comics have no pages or gutter grid. Consecutive images of the same width
-   (the slices an episode is saved as) are joined into one strip, and the strip is cut at
-   bands of plain background at least 1/50 of its width tall: the space between panels, in
-   any colour. Captions and balloons floating between panels stay with the strip in order.
-   Each piece is shown at the screen's width, and one taller than the screen is split at its
-   quietest row. Each subfolder (episode) gets its own bookmark.
-3. **Layout**: each panel must appear at least `--readable-scale` (default 0.8) times its printed
-   size. The tool works this out from the device ppi and `--print-height`. Panels from the same
-   row stay side by side when they fit. Otherwise they are stacked. Each e-reader page is filled
-   with as many panels as fit, and then scaled up to use any leftover space. With `--overview`, each
-   original page is first shown whole on its own page, then its panels follow.
-4. **Text layer** (PDF, EPUB, KEPUB, AZW3): each page is OCR'd with Tesseract, and every recognised word is
-   placed as invisible text exactly over its lettering, following the panel's crop, scale and
-   rotation (in EPUB/KEPUB/AZW3 as transparent, absolutely positioned text over the page image). Long-pressing a word on the e-reader then selects it for dictionary lookup,
-   highlighting and search. ALL-CAPS lettering is stored in lowercase, and words hyphenated
-   across lines are joined, so lookups find dictionary entries. The language is set with
-   `--lang` (default `en`), and `--no-ocr` turns this off. OCR adds about 1 s per page per
-   CPU core. Sound effects and stylised lettering are mostly not recognised.
-5. **Output**: grayscale JPEG pages (colour on Colorsoft or with `--color`), saved as PDF, EPUB,
-   KEPUB, AZW3, CBZ or an image folder.
-   - **Cover**: the first page is kept whole, not split, so the e-reader's library shows it as
-     the cover (`--no-cover` splits it like the others).
-   - **Auto contrast**: each page is stretched so its paper (the median of the page edge)
-     becomes white and its darkest 1% black. Pages with dark borders or little contrast are
-     left alone. `--no-auto-levels` turns it off.
-   - **Bookmarks**: the PDF outline and the EPUB/AZW3 table of contents have one entry per
-     chapter when the archive or folder has a subfolder per chapter, otherwise one per page.
-   - **Metadata**: `--title` (default: the file name) and `--author`.
-
-## Tuning
+## When the result is not right
 
 | Problem | Try |
 |---|---|
-| Text still too small | `-s 1.0` (or higher) |
+| Text is too small | `-s 1.0` or higher |
 | Too few panels per page | `-s 0.65` |
-| Wide panels too small | `--rotate` (puts them in landscape on their own page) |
-| Panels merged together | `--split-coverage 0.5`, `--threshold 30` |
-| Panels split too much | `--split-coverage 0.2` |
-| Washed-out e-ink | `--gamma 1.4` (after auto contrast) |
-| Paper or shading looks too bright | `--no-auto-levels` |
-| File too big | `-q 70` (JPEG quality, default 88), `--max-upscale 1.3` |
-| Dictionary lookup missing words | check `--lang`; copy the PDF over USB (Send to Kindle can drop the text layer) |
-| Neighbouring panels cut into an L-shaped panel | `--rect-crop` |
-| Fix panels by hand | `--edit` opens a panel editor in the browser after detection: every page with its panels (doubtful ones marked). Move and resize panels, draw new ones, delete, merge, split them along a line, click them in reading order, or keep a page whole; trace a panel that is not a rectangle by clicking around its edge (T; click the first point, Enter or double-click to finish); Undo per page. Clicking *Cut the book* cuts it with your panels. In Calibre: tick *Final touch (open panel editor)* in the pop-up; the editor opens in a Calibre window, and closing it cuts the book as it is. Your fixes are kept with the book as a data file (`comicscissors_panels.json`) and reused by later conversions for any device or format; on the CLI, `--keep-panels book.panels.json` does the same (used when it fits the book's pages, written after `--edit`). In two steps instead: `--detect-only panels.json` writes the panels to a file and stops; `--panels panels.json` cuts with that file |
-| Drawing style | Settings come in three layers. A quick pass measures the book (gutter widths, how many pages bleed off the edge, colour, paper, page shape) and picks its style: `manga`, `western-modern`, `western-classic`, `bande-dessinee` or `vintage` (`--style` forces one). Its substyles adjust that: `color`, `hairline` (hairline gutters), `bleed` (panels running off the page), `dense` (narrow gutters); `--substyle hairline,bleed` forces them. Each page then gets a pattern (grid, T column, L shape, inset, splash) whose preset adjusts the settings for that page; neighbouring panels with no frame line or gutter between them are merged, and an L-shaped panel is cut out around its inset. All are printed while converting and listed per page in `--debug-dir`'s `report.txt` |
-| Check detection | `--debug-dir dbg/` writes each page with the detected panel outlines, numbered in reading order (`3?` = still doubtful), plus `report.txt` with each panel's confidence and the reasons. After the book is written it opens a review page in the browser: tag the pages detected wrong (what went wrong, a note, and optionally the boxes of the panels that should have been found). Tags go to `dbg/review.json` and the original of each tagged page to `dbg/sources/`. `--no-review` skips it |
+| Wide panels are too small | `--rotate` (shows them in landscape on their own page) |
+| Two panels stay together | `--split-coverage 0.5`, `--threshold 30` |
+| One panel is cut into pieces | `--split-coverage 0.2` |
+| A panel shape is cut badly | `--rect-crop` (crops each panel to its box) |
+| E-ink looks washed out | `--gamma 1.4` |
+| Paper or shading is too bright | `--no-auto-levels` |
+| The file is too big | `-q 70`, `--max-upscale 1.3` |
+| Dictionary lookup misses words | Check `--lang`. Copy the PDF over USB: Send to Kindle can remove the text. |
+| Detection does not suit the book | `--style` and `--substyle` (see below) |
+
+To see what the tool detected, use `--debug-dir dbg/`. It writes each page with its panels,
+numbered in reading order (`3?` means doubtful), and `report.txt` with the reasons. A review page
+then opens in the browser. There you can tag the pages that are wrong.
+
+## How it works
+
+1. **Book style.** A quick pass measures the book: gutters, bleeds, colour, paper and page shape.
+   It selects a style: `manga`, `western-modern`, `western-classic`, `bande-dessinee` or
+   `newspaper-strip`. Substyles such as `color`, `hairline`, `bleed` and `dense` adjust it.
+2. **Panels.** The tool finds the gutters: the paper between the panels. Each area of art
+   between them is a panel. Frame lines help to tell panels from art. A panel that a speech
+   balloon joins to its neighbour is cut along the gutter.
+3. **Page pattern.** Each page gets a pattern, for example a grid, a T column, an L shape, an
+   inset or a splash. The pattern adjusts the settings for that page.
+4. **Second look.** Each panel gets a confidence score. The tool searches doubtful panels again at
+   full resolution. Panels that stay doubtful are marked in the editor and the report.
+5. **Reading order.** Rows from top to bottom. In a row, left to right, or right to left for manga.
+6. **Layout.** Each panel shows at least 0.8 times its printed size (`-s`). As many panels as fit
+   go on each e-reader page, then they are scaled up to fill it.
+7. **Text.** Tesseract reads the speech balloons. Each word goes as invisible text exactly over its
+   letters, so a long press selects it. `--no-ocr` turns this off. OCR adds about 1 second per page
+   per CPU core.
+8. **Output.** The first page stays whole as the cover. Auto contrast makes the paper white and the
+   ink black. Chapters (subfolders) become bookmarks.
 
 ## Known limitations
 
-- Panels merged **without any gutter** (art or balloons run straight from one panel into the
-  next) can't be split; they're reported as doubtful (`much bigger than usual`).
-- A gutter crossed by artwork, not only by balloons, can be missed.
-- A balloon that crosses a slanted gutter is cut along the gutter, so its last letters can end
-  up with the neighbouring panel.
+- The tool cannot split panels that have no gutter between them. It marks them as doubtful.
+- It can miss a gutter that the art crosses.
+- When a balloon crosses a slanted gutter, the last letters can go with the next panel.
+- On a Kindle, dictionary lookup works in PDF only. The Kindle ignores the text in AZW3 comics.
+
+## For developers
+
+- **Tests.** Detection bugs are tested on synthetic pages (`src/synth.rs`) that copy the failing
+  page layouts with plain shapes. Real pages cannot go in the repository.
+  `scripts/synthetic_pages.sh` writes them as PNG files to `target/synthetic/`.
+- **Releases.** Change `version` in `Cargo.toml`, commit, then run
+  `git tag v<version> && git push --tags`. CI builds the archives and the plugin zip, and
+  publishes the release.
+- **Local archive.**
+  `python3 scripts/package.py --binary target/release/comic-scissors --platform macos-arm64`
+  writes it to `dist/`.
