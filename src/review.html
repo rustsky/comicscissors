@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel Review</title>
+<style>
+:root {
+  --bg: #f6f5f2; --surface: #ffffff; --line: #e2dfd8; --text: #1d1c1a; --muted: #6d6a63;
+  --accent: #2f6fde; --fail: #d1453b; --fail-soft: #fbe7e5; --doubt: #c98a12; --expect: #1f9d55;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --surface: #1f1f1d; --line: #34332f; --text: #ecebe7; --muted: #9a978f;
+    --accent: #6b9cf2; --fail: #ef6b60; --fail-soft: #3a2220; --doubt: #e0a93a; --expect: #4cc47e;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: grid; grid-template-rows: auto 1fr; }
+button { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); }
+
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0; }
+header .input { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+header .spacer { flex: 1; }
+.filters { display: flex; gap: 4px; }
+#status { color: var(--muted); font-size: 12px; min-width: 7ch; }
+
+main { display: grid; grid-template-columns: 150px 1fr 320px; min-height: 0; }
+#list { overflow-y: auto; border-right: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.thumb { position: relative; border: 2px solid transparent; border-radius: 6px; cursor: pointer; background: var(--surface); padding: 4px; }
+.thumb img { width: 100%; display: block; border-radius: 3px; }
+.thumb.sel { border-color: var(--accent); }
+.thumb.failed { background: var(--fail-soft); }
+.thumb .num { position: absolute; top: 6px; left: 6px; background: var(--surface); border-radius: 4px; padding: 0 5px; font-size: 12px; font-weight: 600; }
+.thumb .flag { position: absolute; top: 6px; right: 6px; border-radius: 4px; padding: 0 5px; font-size: 11px; font-weight: 600; color: #fff; }
+.thumb .flag.failed { background: var(--fail); }
+.thumb .flag.doubt { background: var(--doubt); }
+
+#stage-wrap { overflow: auto; padding: 16px; display: flex; justify-content: center; align-items: flex-start; }
+#stage { position: relative; user-select: none; cursor: crosshair; line-height: 0; box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+#stage img { max-height: calc(100vh - 110px); max-width: 100%; display: block; }
+#stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+#stage rect.expect { fill: color-mix(in srgb, var(--expect) 14%, transparent); stroke: var(--expect); stroke-width: 3; vector-effect: non-scaling-stroke; stroke-dasharray: 8 4; }
+#stage rect.drawing { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+#stage text { fill: var(--expect); font-weight: 700; paint-order: stroke; stroke: #fff; stroke-width: 4px; }
+
+aside { border-left: 1px solid var(--line); background: var(--surface); overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 6px; }
+.nav { display: flex; align-items: center; gap: 8px; }
+.nav .title { flex: 1; font-weight: 600; font-size: 16px; }
+#fail { width: 100%; padding: 9px; font-weight: 600; }
+#fail.on { background: var(--fail); border-color: var(--fail); color: #fff; }
+.tags { display: grid; gap: 4px; }
+.tags label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+textarea { width: 100%; min-height: 70px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px; resize: vertical; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+.boxes { display: grid; gap: 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.boxes .row { display: flex; align-items: center; gap: 6px; }
+.boxes .row span { flex: 1; }
+.boxes button { padding: 1px 7px; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+td { padding: 3px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+td.low { color: var(--doubt); font-weight: 600; }
+.done-msg { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; font-size: 16px; }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+  #list { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .thumb { width: 90px; flex: none; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Panel review</h1>
+  <span class="input" id="input"></span>
+  <span class="spacer"></span>
+  <div class="filters">
+    <button data-filter="all" class="on">All</button>
+    <button data-filter="doubt">Doubtful</button>
+    <button data-filter="failed">Tagged <span id="nfailed">0</span></button>
+  </div>
+  <span id="status"></span>
+  <button class="primary" id="done">Done</button>
+</header>
+<main>
+  <nav id="list"></nav>
+  <div id="stage-wrap">
+    <div id="stage">
+      <img id="img" alt="">
+      <svg id="svg" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+  <aside>
+    <div class="nav">
+      <button id="prev" title="Previous page (←)">‹</button>
+      <span class="title" id="title"></span>
+      <button id="next" title="Next page (→)">›</button>
+    </div>
+    <div class="filters">
+      <button id="view-detected" class="on">Detected</button>
+      <button id="view-original">Original</button>
+      <span class="hint" style="align-self:center"><kbd>O</kbd></span>
+    </div>
+    <button id="fail">Detection is wrong <kbd>F</kbd></button>
+    <section>
+      <h2>What went wrong</h2>
+      <div class="tags" id="tags"></div>
+    </section>
+    <section>
+      <h2>Note</h2>
+      <textarea id="note" placeholder="Which panels, what you expected…"></textarea>
+    </section>
+    <section>
+      <h2>Expected panels</h2>
+      <p class="hint">Drag on the page to draw the panels that should have been found, in reading order. Optional, but it makes the test exact.</p>
+      <div class="boxes" id="boxes"></div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button id="copy-detected">Start from detected</button>
+        <button id="clear-boxes">Clear</button>
+      </div>
+    </section>
+    <section>
+      <h2>Detected panels</h2>
+      <table id="detected"></table>
+    </section>
+  </aside>
+</main>
+<div class="done-msg" id="done-msg"><strong>Review saved.</strong><span class="hint" id="done-path"></span><span class="hint">You can close this tab.</span></div>
+<script>
+const TAGS = [
+  ["panel-cut", "A panel is cut in two"],
+  ["panels-merged", "Panels merged into one"],
+  ["panel-missed", "A panel is missing"],
+  ["kept-whole", "Page kept whole, should be cut"],
+  ["should-be-whole", "Page cut, should stay whole"],
+  ["outline", "Outline cuts off art or text"],
+  ["text-lost", "Caption or text left out"],
+  ["noise", "Extra cut (noise, page number, margin)"],
+  ["order", "Wrong reading order"],
+  ["other", "Other"],
+];
+let S, cur = 0, filter = "all", view = "detected", saveTimer = null;
+const marks = {}; // page number -> {failed, tags:Set, note, expected:[]}
+const $ = id => document.getElementById(id);
+
+const mark = n => marks[n] ??= { failed: false, tags: new Set(), note: "", expected: [] };
+const doubtful = p => p.detected.some(d => d.doubtful);
+const visible = () => S.pages.filter(p =>
+  filter === "all" || (filter === "doubt" && doubtful(p)) || (filter === "failed" && mark(p.page).failed));
+
+async function load() {
+  S = await (await fetch("/api/state")).json();
+  $("input").textContent = S.input;
+  const prev = S.previous;
+  for (const r of prev?.pages ?? []) {
+    const p = S.pages.find(p => p.page === r.page);
+    // Only when it is the same page as before (same file name).
+    if (!p || base(p.source) !== base(r.source ?? "")) continue;
+    Object.assign(mark(p.page), { failed: true, tags: new Set(r.tags ?? []), note: r.note ?? "", expected: r.expected ?? [] });
+  }
+  $("tags").innerHTML = TAGS.map(([k, label]) => `<label><input type="checkbox" value="${k}"> ${label}</label>`).join("");
+  renderList();
+  show(0);
+}
+const base = s => s.split(/[\\/]/).pop();
+
+function renderList() {
+  const pages = visible();
+  $("list").innerHTML = pages.map(p => {
+    const m = mark(p.page);
+    const flag = m.failed ? `<span class="flag failed">✗</span>` : doubtful(p) ? `<span class="flag doubt">?</span>` : "";
+    return `<div class="thumb ${m.failed ? "failed" : ""} ${S.pages[cur].page === p.page ? "sel" : ""}" data-page="${p.page}">
+      <img loading="lazy" src="/debug/${p.page}" alt="Page ${p.page}"><span class="num">${p.page}</span>${flag}</div>`;
+  }).join("") || `<p class="hint">No pages.</p>`;
+  $("nfailed").textContent = Object.values(marks).filter(m => m.failed).length;
+}
+
+function show(i) {
+  cur = Math.max(0, Math.min(S.pages.length - 1, i));
+  const p = S.pages[cur], m = mark(p.page);
+  $("title").textContent = `Page ${p.page} of ${S.pages.length}`;
+  $("img").src = `/${view === "detected" ? "debug" : "source"}/${p.page}`;
+  $("svg").setAttribute("viewBox", `0 0 ${p.width} ${p.height}`);
+  $("fail").classList.toggle("on", m.failed);
+  for (const c of $("tags").querySelectorAll("input")) c.checked = m.tags.has(c.value);
+  $("note").value = m.note;
+  $("detected").innerHTML = p.detected.map((d, k) =>
+    `<tr><td>${k + 1}</td><td>${d.w}×${d.h} at ${d.x},${d.y}</td><td class="${d.doubtful ? "low" : ""}">${d.confidence.toFixed(2)}</td><td>${d.issues.join(", ")}</td></tr>`).join("")
+    || `<tr><td>none</td></tr>`;
+  drawBoxes();
+  for (const t of $("list").children) t.classList.toggle("sel", +t.dataset.page === p.page);
+  $("list").querySelector(".sel")?.scrollIntoView({ block: "nearest" });
+}
+
+function drawBoxes(drawing) {
+  const p = S.pages[cur], m = mark(p.page);
+  const font = Math.max(p.width, p.height) / 30;
+  $("svg").innerHTML = m.expected.map((b, k) =>
+    `<rect class="expect" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}"/><text x="${b.x + font * .4}" y="${b.y + font * 1.1}" font-size="${font}">${k + 1}</text>`).join("")
+    + (drawing ? `<rect class="drawing" x="${drawing.x}" y="${drawing.y}" width="${drawing.w}" height="${drawing.h}"/>` : "");
+  $("boxes").innerHTML = m.expected.map((b, k) =>
+    `<div class="row"><span>${k + 1}. ${b.w}×${b.h} at ${b.x},${b.y}</span><button data-up="${k}" title="Earlier in reading order">↑</button><button data-del="${k}" title="Remove">×</button></div>`).join("")
+    || `<span class="hint">None drawn.</span>`;
+}
+
+function changed(autoFail = true) {
+  const m = mark(S.pages[cur].page);
+  if (autoFail && (m.tags.size || m.note.trim() || m.expected.length)) m.failed = true;
+  $("fail").classList.toggle("on", m.failed);
+  renderList();
+  $("status").textContent = "Saving…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => save("/api/save"), 400);
+}
+
+function review() {
+  const pages = S.pages.filter(p => mark(p.page).failed).map(p => {
+    const m = mark(p.page);
+    return { ...p, tags: [...m.tags], note: m.note, expected: m.expected };
+  });
+  return { version: 1, input: S.input, debug_dir: S.debug_dir, saved_at: new Date().toISOString(), pages };
+}
+
+async function save(url) {
+  const r = review();
+  const res = await fetch(`${url}?failed=${r.pages.map(p => p.page).join(",")}`, { method: "POST", body: JSON.stringify(r, null, 2) });
+  $("status").textContent = res.ok ? "Saved" : "Save failed";
+  return res.ok;
+}
+
+// Drawing expected boxes, in page pixels.
+let start = null;
+const toPage = e => {
+  const r = $("stage").getBoundingClientRect(), p = S.pages[cur];
+  return { x: Math.round(Math.max(0, Math.min(r.width, e.clientX - r.left)) * p.width / r.width),
+           y: Math.round(Math.max(0, Math.min(r.height, e.clientY - r.top)) * p.height / r.height) };
+};
+const boxOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+$("stage").addEventListener("pointerdown", e => { start = toPage(e); $("stage").setPointerCapture(e.pointerId); e.preventDefault(); });
+$("stage").addEventListener("pointermove", e => { if (start) drawBoxes(boxOf(start, toPage(e))); });
+$("stage").addEventListener("pointerup", e => {
+  if (!start) return;
+  const b = boxOf(start, toPage(e)), p = S.pages[cur];
+  start = null;
+  if (b.w > p.width / 50 && b.h > p.height / 50) { mark(p.page).expected.push(b); changed(); }
+  drawBoxes();
+});
+
+$("boxes").addEventListener("click", e => {
+  const m = mark(S.pages[cur].page), t = e.target.dataset;
+  if (t.del !== undefined) m.expected.splice(+t.del, 1);
+  else if (t.up !== undefined && +t.up > 0) m.expected.splice(+t.up - 1, 0, m.expected.splice(+t.up, 1)[0]);
+  else return;
+  drawBoxes(); changed();
+});
+$("copy-detected").onclick = () => {
+  const p = S.pages[cur];
+  mark(p.page).expected = p.detected.map(({ x, y, w, h }) => ({ x, y, w, h }));
+  drawBoxes(); changed();
+};
+$("clear-boxes").onclick = () => { mark(S.pages[cur].page).expected = []; drawBoxes(); changed(false); };
+$("fail").onclick = () => { const m = mark(S.pages[cur].page); m.failed = !m.failed; changed(false); };
+$("tags").addEventListener("change", e => {
+  const m = mark(S.pages[cur].page);
+  e.target.checked ? m.tags.add(e.target.value) : m.tags.delete(e.target.value);
+  changed();
+});
+$("note").addEventListener("input", e => { mark(S.pages[cur].page).note = e.target.value; changed(); });
+$("list").addEventListener("click", e => {
+  const t = e.target.closest(".thumb");
+  if (t) show(S.pages.findIndex(p => p.page === +t.dataset.page));
+});
+const step = d => {
+  const pages = visible(), at = pages.findIndex(p => p.page === S.pages[cur].page);
+  const next = pages[at < 0 ? 0 : at + d];
+  if (next) show(S.pages.indexOf(next));
+};
+$("prev").onclick = () => step(-1);
+$("next").onclick = () => step(1);
+const setView = v => {
+  view = v;
+  $("view-detected").classList.toggle("on", v === "detected");
+  $("view-original").classList.toggle("on", v === "original");
+  show(cur);
+};
+$("view-detected").onclick = () => setView("detected");
+$("view-original").onclick = () => setView("original");
+for (const b of document.querySelectorAll("[data-filter]")) b.onclick = () => {
+  filter = b.dataset.filter;
+  for (const o of document.querySelectorAll("[data-filter]")) o.classList.toggle("on", o === b);
+  renderList();
+};
+document.addEventListener("keydown", e => {
+  if (e.target.matches("textarea, input")) return;
+  if (e.key === "ArrowRight" || e.key === "j") step(1);
+  else if (e.key === "ArrowLeft" || e.key === "k") step(-1);
+  else if (e.key === "f") $("fail").click();
+  else if (e.key === "o") setView(view === "detected" ? "original" : "detected");
+});
+$("done").onclick = async () => {
+  clearTimeout(saveTimer);
+  if (await save("/api/done")) {
+    $("done-path").textContent = `${S.debug_dir}/review.json`;
+    $("done-msg").style.display = "flex";
+  }
+};
+load();
+</script>
+</body>
+</html>

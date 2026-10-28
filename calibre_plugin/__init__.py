@@ -8,7 +8,7 @@ class ComicScissorsPlugin(InterfaceActionBase):
     description = 'Comic & manga panel splitter for e-readers: cuts out panels and repacks them so they are readable without zooming'
     author = 'rustysky'
     # Both lines are rewritten by scripts/package.py for each release build.
-    version = (0, 2, 0)
+    version = (0, 3, 0)
     supported_platforms = ['windows', 'osx', 'linux']
     minimum_calibre_version = (6, 0, 0)
 

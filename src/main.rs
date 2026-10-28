@@ -1,19 +1,30 @@
 mod detect;
 mod devices;
+mod edges;
+mod edit;
+mod frames;
 mod epub;
 mod input;
+mod kindle;
 mod layout;
 mod ocr;
 mod output;
+mod pattern;
 mod progress;
 mod refine;
+mod review;
 mod spreads;
+mod style;
+mod template;
+#[cfg(test)]
+mod synth;
 mod webtoon;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -33,11 +44,19 @@ enum Format {
     Images,
 }
 
+impl Format {
+    /// Formats that carry the OCR text layer for dictionary lookup.
+    fn has_text(self) -> bool {
+        matches!(self, Format::Pdf | Format::Epub | Format::Kepub | Format::Azw3)
+    }
+}
+
 /// Split comic pages into panels and repack them so they are readable on an e-reader without zooming.
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
-    /// Comic to convert: .pdf, .cbz/.zip, .cbr/.cb7, an image, or a folder of images.
+    /// Comic to convert: .pdf, .cbz/.zip, .cbr/.cb7, a DRM-free Kindle book (.azw3/.mobi), an image,
+    /// or a folder of images.
     input: Option<PathBuf>,
 
     /// Output path (default: <input>_repanel.<ext>, next to the input).
@@ -114,6 +133,26 @@ struct Args {
     #[arg(long)]
     webtoon: bool,
 
+    /// Cut along hairline gutters whatever the style pass finds (for checking single pages).
+    #[arg(long, hide = true)]
+    hairlines: bool,
+
+    /// Measure the book's drawing style, print it and exit.
+    #[arg(long, hide = true)]
+    show_style: bool,
+
+    /// Drawing style the detection is set up for. Found by measuring the book when omitted:
+    /// manga, western-modern (colour, bleeding panels), western-classic (a grid of framed panels),
+    /// bande-dessinee (a dense grid on album pages) or vintage (old scanned comics).
+    #[arg(long, value_enum)]
+    style: Option<style::Preset>,
+
+    /// Traits of the book adjusting its style, comma separated; found by measuring the book when
+    /// omitted: color, hairline (hairline gutters), bleed (panels running off the page), dense
+    /// (narrow gutters).
+    #[arg(long, value_enum, value_delimiter = ',')]
+    substyle: Vec<style::Substyle>,
+
     /// Keep two-page spreads (landscape scans of an open book) whole instead of splitting them
     /// at the centre gutter into two pages.
     #[arg(long)]
@@ -173,9 +212,37 @@ struct Args {
     #[arg(long, default_value_t = 300)]
     pdf_dpi: u32,
 
-    /// Write each source page with the detected panels outlined into this folder.
+    /// Write each source page with the detected panels outlined into this folder, then open a
+    /// review page in the browser to tag the pages detected wrong (saved to review.json there).
     #[arg(long)]
     debug_dir: Option<PathBuf>,
+
+    /// Fix the detected panels by hand before cutting: opens a panel editor in the browser, and
+    /// the book is cut when its Cut button is pressed.
+    #[arg(long)]
+    edit: bool,
+
+    /// With --edit: don't open a browser; print `@@edit <url>` for a front end to show the editor.
+    #[arg(long, hide = true)]
+    edit_url_only: bool,
+
+    /// Detect the panels, write them to this JSON file and stop (fix them, then cut with --panels).
+    #[arg(long, value_name = "FILE", conflicts_with = "panels")]
+    detect_only: Option<PathBuf>,
+
+    /// Cut with the panels in this JSON file (from --detect-only) instead of detecting them.
+    #[arg(long, value_name = "FILE")]
+    panels: Option<PathBuf>,
+
+    /// Keep hand-fixed panels with the book in this JSON file: when it exists and fits the book's
+    /// pages, cut with its panels instead of detecting them; after --edit, save the panels to it.
+    /// The panels are in the source pages' pixels, so the file serves any device and format.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["panels", "detect_only"])]
+    keep_panels: Option<PathBuf>,
+
+    /// With --debug-dir: don't open the review page.
+    #[arg(long)]
+    no_review: bool,
 
     /// Print progress as `@@progress <stage>|<pos>|<len>` lines on stdout (for front ends).
     #[arg(long, hide = true)]
@@ -224,11 +291,11 @@ fn run() -> Result<()> {
     let prompted = args.device.is_none() && args.width.is_none();
     let lang = match &args.lang {
         Some(l) => l.clone(),
-        None if prompted && !args.no_ocr && args.format == Format::Pdf => ocr::prompt()?,
+        None if prompted && !args.no_ocr && args.format.has_text() => ocr::prompt()?,
         None => "en".into(),
     };
-    // OCR text layer: PDF only, and only when Tesseract has the language.
-    let ocr_lang = if args.no_ocr || args.format != Format::Pdf {
+    // OCR text layer (PDF, EPUB, KEPUB, AZW3), only when Tesseract has the language.
+    let ocr_lang = if args.no_ocr || !args.format.has_text() {
         None
     } else {
         match ocr::resolve(&lang) {
@@ -271,7 +338,32 @@ fn run() -> Result<()> {
         }
     }
 
-    // 1. Detect panels on every page in parallel.
+    // 1. A quick look at every page for the book's drawing style, which sets up the detection.
+    let tuning = if webtoon {
+        style::Tuning::default()
+    } else {
+        let pb = progress::bar("Style", pages.len(), "pages");
+        let found: Vec<style::PageStyle> = pages
+            .par_iter()
+            .progress_with(pb.clone())
+            .map(|p| {
+                // An unreadable page is skipped here and reported by the detection.
+                output::load_image(p).map_or_else(|_| style::PageStyle::default(), |img| style::measure_page(&img))
+            })
+            .collect();
+        pb.finish_and_clear();
+        let traits = style::Traits::from_pages(&found);
+        let mut tuning = style::Tuning::for_book(&traits, args.style, &args.substyle, args.rtl);
+        tuning.hairlines |= args.hairlines;
+        println!("Style: {}", tuning.describe(&traits));
+        if args.show_style {
+            println!("{traits:#?}\n{tuning:#?}");
+            return Ok(());
+        }
+        tuning
+    };
+
+    // 2. Detect panels on every page in parallel.
     let det = detect::DetectOptions {
         threshold: args.threshold,
         split_coverage: args.split_coverage,
@@ -279,10 +371,13 @@ fn run() -> Result<()> {
         padding: 0.004,
         exact_shapes: !args.rect_crop,
         rtl: args.rtl,
+        tuning,
     };
     if let Some(d) = &args.debug_dir {
         std::fs::create_dir_all(d)?;
     }
+    // Panels fixed by hand in an earlier run, when they are for these pages.
+    let panels_file = args.panels.clone().or_else(|| args.keep_panels.clone().filter(|k| k.exists() && edit::fits(k, &pages)));
     let pb = progress::bar("Detecting", pages.len(), if ocr_lang.is_some() { "pages (panels + text)" } else { "pages" });
     struct Analysed {
         path: PathBuf,
@@ -292,6 +387,8 @@ fn run() -> Result<()> {
         words: Vec<ocr::Word>,
         chapter: String,
         levels: Option<(u8, u8)>,
+        pattern: Option<pattern::Pattern>,
+        line_pattern: Option<pattern::Pattern>,
     }
     // A page that can't be read is skipped with a warning instead of failing the book.
     let analysed: Vec<Option<Analysed>> = pages
@@ -307,7 +404,10 @@ fn run() -> Result<()> {
                 }
             };
             // A webtoon piece is one panel (or a few stacked ones) already.
-            let panels = if webtoon {
+            let panels = if panels_file.is_some() {
+                // Read from the panel file below.
+                Vec::new()
+            } else if webtoon {
                 let rect = detect::Rect { x: 0, y: 0, w: img.width(), h: img.height() };
                 vec![detect::Panel::new(rect, None, Vec::new())]
             } else {
@@ -328,6 +428,8 @@ fn run() -> Result<()> {
                 words,
                 chapter: chapter.clone(),
                 levels,
+                pattern: None,
+                line_pattern: None,
             }))
         })
         .collect::<Result<_>>()?;
@@ -335,6 +437,15 @@ fn run() -> Result<()> {
     let mut analysed: Vec<Analysed> = analysed.into_iter().flatten().collect();
     if analysed.is_empty() {
         bail!("no readable pages");
+    }
+    // Panels from a file replace the detection (and every pass that refines it).
+    let from_file = panels_file.is_some();
+    if let Some(path) = &panels_file {
+        let sources: Vec<(PathBuf, u32, u32)> = analysed.iter().map(|a| (a.path.clone(), a.width, a.height)).collect();
+        for (a, panels) in analysed.iter_mut().zip(edit::read(path, &sources)?) {
+            a.panels = panels;
+        }
+        println!("Panels read from {}", path.display());
     }
 
     // Book-level check: a panel much bigger than the book's typical one, on a page with
@@ -344,8 +455,8 @@ fn run() -> Result<()> {
         .flat_map(|a| a.panels.iter().map(move |p| p.rect.area() as f32 / (a.width * a.height) as f32))
         .collect();
     fractions.sort_by(f32::total_cmp);
-    let median = fractions[fractions.len() / 2];
-    for a in &mut analysed {
+    let median = fractions.get(fractions.len() / 2).copied().unwrap_or(1.0);
+    for a in analysed.iter_mut().filter(|_| !from_file) {
         let page_area = (a.width * a.height) as f32;
         if a.panels.len() > 1 {
             for p in &mut a.panels {
@@ -369,7 +480,7 @@ fn run() -> Result<()> {
     }
 
     // Second round on pages with doubtful panels.
-    if !args.no_refine && low_before > 0 {
+    if !args.no_refine && !from_file && low_before > 0 {
         let todo: Vec<usize> = (0..analysed.len()).filter(|&i| std::env::var("CS_FORCE").is_ok() || analysed[i].panels.iter().any(|p| p.is_low())).collect();
         let pb = progress::bar("Refining", todo.len(), "pages");
         let results: Vec<(usize, Vec<detect::Panel>, refine::Stats)> = todo
@@ -402,17 +513,123 @@ fn run() -> Result<()> {
         );
     }
 
+    // Page layouts the book uses, learned from its confident pages: panels cut in two along one
+    // of their cells are merged back.
+    if !webtoon && !from_file {
+        let lib = template::learn(&analysed.iter().map(|a| (a.width, a.height, a.panels.as_slice())).collect::<Vec<_>>());
+        let merged: usize = analysed
+            .iter_mut()
+            .map(|a| {
+                let n = template::apply(&mut a.panels, a.width, a.height, &lib);
+                if n > 0 {
+                    a.panels = detect::reading_order(std::mem::take(&mut a.panels), |p| p.rect, args.rtl);
+                }
+                n
+            })
+            .sum();
+        if merged > 0 {
+            println!("Page layouts: {} learned, {merged} cut panel(s) merged back", lib.len());
+        }
+    }
+
+    // Each page's pattern: neighbours with no frame line or gutter between are one panel. The
+    // pattern's preset adjusts the book's settings for the page; when it changes them, the page
+    // is detected again with them.
+    if !webtoon && !from_file {
+        let pb = progress::bar("Patterns", analysed.len(), "pages");
+        let found: Vec<(Vec<detect::Panel>, pattern::Pattern, bool, Option<pattern::Pattern>)> = analysed
+            .par_iter()
+            .progress_with(pb.clone())
+            .map(|a| -> Result<_> {
+                let img = output::load_image(&a.path)?;
+                let lines_pattern = frames::pattern(&frames::trace(&img.to_luma8()));
+                let mut panels = a.panels.clone();
+                let mut p = pattern::resolve(&img, &mut panels);
+                let mut page_tuning = det.tuning;
+                p.adjust(&mut page_tuning, &panels, a.width, a.height);
+                let redone = page_tuning != det.tuning;
+                if redone {
+                    let o = detect::DetectOptions { tuning: page_tuning, ..det.clone() };
+                    let mut again = detect::detect_panels(&img, &o);
+                    detect::drop_edge_strips(&mut again, a.width, a.height);
+                    if !args.no_refine {
+                        again = refine::refine_page(&img, again, args.rtl, det.padding).0;
+                        detect::drop_edge_strips(&mut again, a.width, a.height);
+                    }
+                    p = pattern::resolve(&img, &mut again);
+                    panels = again;
+                }
+                let panels = match p {
+                    pattern::Pattern::VerticalStrips => pattern::column_order(panels, args.rtl),
+                    _ => detect::reading_order(panels, |p| p.rect, args.rtl),
+                };
+                let mut panels = panels;
+                if p == pattern::Pattern::LShape {
+                    pattern::l_first(&mut panels);
+                }
+                Ok((panels, p, redone, lines_pattern))
+            })
+            .collect::<Result<_>>()?;
+        pb.finish_and_clear();
+        let redone = found.iter().filter(|f| f.2).count();
+        for (a, f) in analysed.iter_mut().zip(&found) {
+            a.line_pattern = f.3;
+        }
+        let found: Vec<(Vec<detect::Panel>, pattern::Pattern)> = found.into_iter().map(|(a, b, _, _)| (a, b)).collect();
+        if redone > 0 {
+            println!("Pattern presets: {redone} page(s) detected again with their pattern's settings");
+        }
+        let mut merged = 0;
+        let mut counts: Vec<(pattern::Pattern, usize)> = Vec::new();
+        for (a, (panels, p)) in analysed.iter_mut().zip(found) {
+            merged += a.panels.len().saturating_sub(panels.len());
+            a.panels = panels;
+            a.pattern = Some(p);
+            match counts.iter_mut().find(|(q, _)| *q == p) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((p, 1)),
+            }
+        }
+        let counts: Vec<String> = counts.iter().map(|(p, n)| format!("{} {n}", p.name())).collect();
+        println!("Page patterns: {}; {merged} panel(s) without a frame or gutter apart merged", counts.join(", "));
+    }
+
+    if let Some(path) = &args.detect_only {
+        edit::write(path, &analysed.iter().map(|a| (a.path.clone(), a.width, a.height, a.panels.clone())).collect::<Vec<_>>())?;
+        println!("Panels written to {}", path.display());
+        return Ok(());
+    }
+    if args.edit {
+        progress::stage("Editing");
+        let mut pages: Vec<edit::EditPage> =
+            analysed.iter_mut().map(|a| edit::EditPage { source: &a.path, width: a.width, height: a.height, panels: &mut a.panels }).collect();
+        edit::serve(&input, args.rtl, !args.edit_url_only, &mut pages)?;
+        if let Some(path) = &args.keep_panels {
+            edit::write(path, &analysed.iter().map(|a| (a.path.clone(), a.width, a.height, a.panels.clone())).collect::<Vec<_>>())?;
+            println!("Panels saved to {}", path.display());
+        }
+    }
+
     if let Some(d) = &args.debug_dir {
         let pb = progress::bar("Debug", analysed.len(), "pages");
         analysed.par_iter().enumerate().progress_with(pb.clone()).try_for_each(|(i, a)| -> Result<()> {
             let img = output::load_image(&a.path)?;
             detect::debug_image(&img, &a.panels).save(d.join(format!("page{:04}.jpg", i + 1)))?;
             detect::debug_masks(img.width(), img.height(), &a.panels).save(d.join(format!("page{:04}_masks.png", i + 1)))?;
+            let gray = img.to_luma8();
+            frames::debug_image(&gray, &frames::trace(&gray)).save(d.join(format!("page{:04}_frames.png", i + 1)))?;
             Ok(())
         })?;
         pb.finish_and_clear();
-        std::fs::write(d.join("report.txt"), report(&analysed.iter().map(|a| (&a.path, &a.panels)).collect::<Vec<_>>()))?;
+        std::fs::write(d.join("report.txt"), report(&analysed.iter().map(|a| (&a.path, &a.panels, a.pattern, a.line_pattern)).collect::<Vec<_>>()))?;
     }
+    // Kept for the review after the book is written (the pages are consumed below).
+    let review = args.debug_dir.is_some() && !args.no_review && !args.progress_lines && std::io::stdin().is_terminal();
+    let reviewed: Vec<(PathBuf, u32, u32, Vec<detect::Panel>)> = if review {
+        analysed.iter().map(|a| (a.path.clone(), a.width, a.height, a.panels.clone())).collect()
+    } else {
+        Vec::new()
+    };
 
     let pages: Vec<PathBuf> = analysed.iter().map(|a| a.path.clone()).collect();
     let mut sources = Vec::new();
@@ -430,7 +647,7 @@ fn run() -> Result<()> {
         words.push(a.words);
     }
 
-    // 2. Pack panels into e-reader pages.
+    // 3. Pack panels into e-reader pages.
     let lo = layout::LayoutOptions {
         screen_w: device.width,
         screen_h: device.height,
@@ -449,7 +666,7 @@ fn run() -> Result<()> {
     };
     let out_pages = layout::layout(&sources, &lo);
 
-    // 3. Render.
+    // 4. Render.
     let ro = output::RenderOptions {
         width: device.width,
         height: device.height,
@@ -470,9 +687,9 @@ fn run() -> Result<()> {
     let author = args.author.as_deref();
     let toc = table_of_contents(&out_pages, &chapters, lo.cover);
     let pb = progress::spinner("Writing", &out_path.display().to_string());
+    let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
     match args.format {
         Format::Pdf => {
-            let texts: Vec<_> = out_pages.iter().map(|p| ocr::place_words(p, &words, &shapes)).collect();
             let tag = ocr_lang.as_ref().map(|_| ocr::bcp47(&lang));
             let info = output::DocInfo { title, author, lang: tag.as_deref(), toc: &toc };
             output::write_pdf(&out_path, &rendered, &texts, &ro, device.ppi, &info)?
@@ -488,6 +705,7 @@ fn run() -> Result<()> {
                 width: device.width,
                 height: device.height,
                 rtl: args.rtl,
+                texts: &texts,
             };
             if args.format == Format::Azw3 {
                 epub::write_azw3(&out_path, &rendered, &book)?
@@ -504,6 +722,13 @@ fn run() -> Result<()> {
         out_path.display(),
         start.elapsed().as_secs_f32()
     );
+    if let (true, Some(d)) = (review, &args.debug_dir) {
+        let pages: Vec<review::Page> = reviewed
+            .iter()
+            .map(|(source, width, height, panels)| review::Page { source, width: *width, height: *height, panels })
+            .collect();
+        review::serve(d, &input, &pages)?;
+    }
     Ok(())
 }
 
@@ -544,11 +769,13 @@ fn table_of_contents(out_pages: &[layout::OutPage], chapters: &[String], cover: 
 }
 
 /// Per-page list of panels with confidence and reasons, doubtful ones marked.
-fn report(pages: &[(&PathBuf, &Vec<detect::Panel>)]) -> String {
+fn report(pages: &[(&PathBuf, &Vec<detect::Panel>, Option<pattern::Pattern>, Option<pattern::Pattern>)]) -> String {
     let mut out = String::new();
-    for (i, (path, panels)) in pages.iter().enumerate() {
+    for (i, (path, panels, pattern, lines)) in pages.iter().enumerate() {
         let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-        out.push_str(&format!("page {} ({name}): {} panel(s)\n", i + 1, panels.len()));
+        let pattern = pattern.map(|p| format!(", {}", p.name())).unwrap_or_default()
+            + &lines.map(|p| format!(" (traced: {})", p.name())).unwrap_or_default();
+        out.push_str(&format!("page {} ({name}): {} panel(s){pattern}\n", i + 1, panels.len()));
         for (k, p) in panels.iter().enumerate() {
             let why: Vec<&str> = p.issues.iter().map(|i| i.label()).collect();
             let mark = if p.is_low() { "  DOUBTFUL" } else { "" };

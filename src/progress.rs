@@ -46,6 +46,13 @@ pub fn bar(prefix: &'static str, len: usize, msg: &str) -> ProgressBar {
         .with_message(msg.to_string())
 }
 
+/// Announce a stage that waits on the user (no progress to show): a progress line for front ends.
+pub fn stage(prefix: &str) {
+    if lines() {
+        println!("@@progress {prefix}|0|0");
+    }
+}
+
 /// Turn a spinner into a bar once the total is known.
 pub fn to_bar(pb: &ProgressBar, len: usize) {
     pb.set_length(len as u64);

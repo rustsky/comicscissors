@@ -25,6 +25,7 @@ prefs.defaults['rtl'] = False
 prefs.defaults['rect_crop'] = False
 prefs.defaults['overview'] = False
 prefs.defaults['webtoon'] = False
+prefs.defaults['edit'] = False
 prefs.defaults['cover'] = True
 prefs.defaults['auto_levels'] = True
 prefs.defaults['quality'] = 88
@@ -33,6 +34,8 @@ prefs.defaults['custom_height'] = 1680
 prefs.defaults['custom_ppi'] = 300
 prefs.defaults['custom_color'] = False
 prefs.defaults['extra_args'] = ''
+# Added to the title of the copy that holds a repack in the original's format (CBZ to CBZ).
+prefs.defaults['title_suffix'] = ' (repanel)'
 prefs.defaults['binary'] = ''  # empty: the binary bundled with the plugin, then PATH
 
 _bundled = None
@@ -159,6 +162,8 @@ STEPS = {
     'Loading': (0.03, 0.18, 'Loading pages'),
     'Detecting': (0.18, 0.75, 'Detecting panels'),
     'Refining': (0.75, 0.85, 'Checking doubtful panels'),
+    # Only with "Fix panels by hand": the job waits until the editor's Cut button is pressed.
+    'Editing': (0.85, 0.85, 'Waiting for your panel fixes in the editor window'),
     'Rendering': (0.85, 0.98, 'Rendering pages'),
     'Writing': (0.98, 1.0, 'Writing file'),
 }
@@ -202,7 +207,7 @@ class Progress:
             label = STEPS[stage][2]
             if i in self.durations:
                 self.log(f'  \u2713 {i + 1}/{len(ORDER)} {label:<26} {_duration(self.durations[i])}')
-            else:
+            elif stage != 'Editing':
                 self.log(f'  \u2013 {i + 1}/{len(ORDER)} {label:<26} skipped')
 
     def _advance(self, i):
@@ -211,7 +216,7 @@ class Progress:
             self.durations[self.step] = now - self.step_started
             self.log(f'\u2713 Step {self.step + 1}/{len(ORDER)}: {STEPS[ORDER[self.step]][2]} ({_duration(now - self.step_started)})')
         for skipped in range(self.step + 1, i):
-            if skipped < len(ORDER):
+            if skipped < len(ORDER) and ORDER[skipped] != 'Editing':
                 self.log(f'\u2013 Step {skipped + 1}/{len(ORDER)}: {STEPS[ORDER[skipped]][2]} (skipped)')
         if i < len(ORDER):
             self.log(f'\u25b6 Step {i + 1}/{len(ORDER)}: {STEPS[ORDER[i]][2]}')
@@ -241,9 +246,10 @@ def _duration(secs):
     return f'{secs // 60} min {secs % 60} s' if secs >= 60 else f'{secs} s'
 
 
-def run(cmd, env, log, abort, progress=None):
+def run(cmd, env, log, abort, progress=None, on_edit=None):
     """Run cmd, copying its output into the job log and its progress into the job's progress bar.
-    Killed when the job is aborted."""
+    Killed when the job is aborted. An '@@edit <url>' line (the panel editor waiting) is passed to
+    on_edit."""
     cmd = cmd + ['--progress-lines']
     log(' '.join(cmd))
     p = subprocess.Popen(
@@ -263,6 +269,10 @@ def run(cmd, env, log, abort, progress=None):
         if line.startswith('@@progress'):
             if progress is not None:
                 progress.line(line)
+            continue
+        if line.startswith('@@edit '):
+            if on_edit is not None:
+                on_edit(line.split(None, 1)[1])
             continue
         lines.append(line)
         log(line)

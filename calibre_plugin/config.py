@@ -1,4 +1,6 @@
-"""Plugin settings: e-reader, output format, language and extra CLI flags."""
+"""Plugin settings: e-reader, output format, language and extra CLI flags.
+
+Manga or comic and the panel editor are asked on each repack instead (see dialog.py)."""
 
 from qt.core import QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QWidget
 
@@ -76,17 +78,13 @@ class ConfigWidget(QWidget):
                                 'e-ink shows little difference down to about 70.')
         form.addRow('Image quality:', self.quality)
 
-        self.ocr = QCheckBox('Add text layer for dictionary lookup (PDF only, needs Tesseract)', self)
+        self.ocr = QCheckBox('Add text layer for dictionary lookup (PDF, EPUB, KEPUB, AZW3; needs Tesseract)', self)
         self.ocr.setChecked(prefs['ocr'])
         form.addRow(self.ocr)
 
         self.lang = QLineEdit(prefs['lang'], self)
         self.lang.setPlaceholderText('en, fr, de, es, ja, fa or a Tesseract code')
         form.addRow('Comic language:', self.lang)
-
-        self.rtl = QCheckBox('Manga: read panels right to left', self)
-        self.rtl.setChecked(prefs['rtl'])
-        form.addRow(self.rtl)
 
         self.webtoon = QCheckBox('Webtoon: vertical scroll comic (found automatically for very tall pages)', self)
         self.webtoon.setToolTip('Joins the slices, cuts between panels at background gaps and shows them at screen width.')
@@ -114,6 +112,11 @@ class ConfigWidget(QWidget):
         self.rect_crop.setChecked(prefs['rect_crop'])
         form.addRow(self.rect_crop)
 
+        self.title_suffix = QLineEdit(prefs['title_suffix'], self)
+        self.title_suffix.setToolTip('When the book already has an original file of the output format (e.g. a CBZ repacked to CBZ),\n'
+                                     'the result goes to a copy of the book whose title ends with this.')
+        form.addRow('Title suffix for copies:', self.title_suffix)
+
         self.extra_args = QLineEdit(prefs['extra_args'], self)
         self.extra_args.setPlaceholderText('e.g. -s 1.0 --gamma 1.4 --rotate')
         form.addRow('Extra options:', self.extra_args)
@@ -139,11 +142,11 @@ class ConfigWidget(QWidget):
         prefs['quality'] = self.quality.value()
         prefs['ocr'] = self.ocr.isChecked()
         prefs['lang'] = self.lang.text().strip() or 'en'
-        prefs['rtl'] = self.rtl.isChecked()
         prefs['overview'] = self.overview.isChecked()
         prefs['webtoon'] = self.webtoon.isChecked()
         prefs['cover'] = self.cover.isChecked()
         prefs['auto_levels'] = self.auto_levels.isChecked()
         prefs['rect_crop'] = self.rect_crop.isChecked()
         prefs['extra_args'] = self.extra_args.text().strip()
+        prefs['title_suffix'] = self.title_suffix.text() or ' (repanel)'
         prefs['binary'] = self.binary.text().strip()

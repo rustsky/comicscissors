@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel Editor</title>
+<style>
+:root {
+  --bg: #f6f5f2; --surface: #ffffff; --line: #e2dfd8; --text: #1d1c1a; --muted: #6d6a63;
+  --accent: #2f6fde; --doubt: #c98a12; --edited: #1f9d55; --sel: #d1453b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --surface: #1f1f1d; --line: #34332f; --text: #ecebe7; --muted: #9a978f;
+    --accent: #6b9cf2; --doubt: #e0a93a; --edited: #4cc47e; --sel: #ef6b60;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: grid; grid-template-rows: auto 1fr; }
+button { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0; }
+header .input { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 36ch; }
+.spacer { flex: 1; }
+.group { display: flex; gap: 4px; flex-wrap: wrap; }
+#status { color: var(--muted); font-size: 12px; min-width: 8ch; }
+main { display: grid; grid-template-columns: 140px 1fr 290px; min-height: 0; }
+#list { overflow-y: auto; border-right: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.thumb { position: relative; border: 2px solid transparent; border-radius: 6px; cursor: pointer; background: var(--surface); padding: 3px; line-height: 0; }
+.thumb.sel { border-color: var(--accent); }
+.thumb img { width: 100%; display: block; }
+.thumb svg { position: absolute; inset: 3px; width: calc(100% - 6px); height: calc(100% - 6px); }
+.thumb svg path { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.thumb .num { position: absolute; top: 5px; left: 5px; background: var(--surface); border-radius: 4px; padding: 0 5px; font-size: 12px; line-height: 1.5; font-weight: 600; }
+.thumb .flag { position: absolute; top: 5px; right: 5px; border-radius: 4px; padding: 0 5px; font-size: 11px; line-height: 1.5; font-weight: 600; color: #fff; }
+.flag:empty { display: none; }
+.flag.doubt { background: var(--doubt); }
+.flag.edited { background: var(--edited); }
+#stage-wrap { overflow: auto; padding: 16px; display: flex; justify-content: center; align-items: flex-start; }
+#stage { position: relative; user-select: none; line-height: 0; box-shadow: 0 1px 4px rgba(0,0,0,.15); touch-action: none; }
+#stage img { max-height: calc(100vh - 100px); max-width: 100%; display: block; }
+#stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+#stage.tool-draw, #stage.tool-split, #stage.tool-trace { cursor: crosshair; }
+#stage.tool-order { cursor: pointer; }
+.panel .box { fill: rgba(47,111,222,.08); stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; cursor: move; }
+.panel.doubt .box { stroke: var(--doubt); stroke-dasharray: 10 6; }
+.panel.sel .box { stroke: var(--sel); fill: rgba(209,69,59,.12); }
+.panel.ordered .box { fill: rgba(31,157,85,.18); }
+.panel text { font-weight: 700; paint-order: stroke; stroke: #fff; fill: #000; pointer-events: none; }
+rect.handle { fill: #fff; stroke: var(--sel); stroke-width: 2; vector-effect: non-scaling-stroke; }
+rect.ghost { fill: none; stroke: var(--sel); stroke-width: 2; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+polyline.trace { fill: rgba(209,69,59,.1); stroke: var(--sel); stroke-width: 2; vector-effect: non-scaling-stroke; }
+circle.dot { fill: #fff; stroke: var(--sel); stroke-width: 2; vector-effect: non-scaling-stroke; }
+circle.dot.first { fill: var(--sel); }
+line.cut { stroke: var(--sel); stroke-width: 3; stroke-dasharray: 8 5; vector-effect: non-scaling-stroke; }
+aside { border-left: 1px solid var(--line); background: var(--surface); overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 6px; }
+.nav { display: flex; align-items: center; gap: 8px; }
+.nav .title { flex: 1; font-weight: 600; font-size: 16px; }
+.tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tools button { text-align: left; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+#panels { font-size: 12px; font-variant-numeric: tabular-nums; display: grid; gap: 2px; }
+#panels div { display: flex; gap: 6px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+#panels div.sel { background: rgba(209,69,59,.12); }
+#panels .doubt { color: var(--doubt); }
+.done { position: fixed; inset: 0; background: var(--bg); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; font-size: 16px; }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+  #list { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .thumb { width: 80px; flex: none; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Panel editor</h1>
+  <span class="input" id="input"></span>
+  <span class="spacer"></span>
+  <div class="group">
+    <button data-filter="all" class="on">All</button>
+    <button data-filter="doubt">Doubtful <span id="ndoubt"></span></button>
+    <button data-filter="edited">Edited <span id="nedited"></span></button>
+  </div>
+  <span id="status"></span>
+  <button class="primary" id="cut">Cut the book</button>
+</header>
+<main>
+  <nav id="list"></nav>
+  <div id="stage-wrap">
+    <div id="stage"><img id="img" alt=""><svg id="svg" preserveAspectRatio="none"></svg></div>
+  </div>
+  <aside>
+    <div class="nav">
+      <button id="prev" title="Previous page (←)">‹</button>
+      <span class="title" id="title"></span>
+      <button id="next" title="Next page (→)">›</button>
+    </div>
+    <section>
+      <h2>Tool</h2>
+      <div class="tools">
+        <button data-tool="select" class="on">Select / move <kbd>V</kbd></button>
+        <button data-tool="draw">Draw panel <kbd>D</kbd></button>
+        <button data-tool="split">Split <kbd>S</kbd></button>
+        <button data-tool="order">Reading order <kbd>O</kbd></button>
+        <button data-tool="trace">Trace panel <kbd>T</kbd></button>
+      </div>
+      <p class="hint" id="hint"></p>
+    </section>
+    <section>
+      <h2>Edit</h2>
+      <div class="tools">
+        <button id="delete" disabled>Delete <kbd>Del</kbd></button>
+        <button id="merge" disabled>Merge <kbd>M</kbd></button>
+        <button id="whole">Keep page whole <kbd>W</kbd></button>
+        <button id="reset">Reset page <kbd>R</kbd></button>
+        <button id="undo" disabled>Undo <kbd>Z</kbd></button>
+        <button id="unshape" disabled title="Make the selected traced panels plain rectangles again">Make rectangle</button>
+      </div>
+    </section>
+    <section>
+      <h2>Panels on this page</h2>
+      <div id="panels"></div>
+    </section>
+  </aside>
+</main>
+<div class="done" id="done"><strong>Cutting the book with your panels.</strong><span class="hint">You can close this tab.</span></div>
+<script>
+const HINTS = {
+  select: "Click a panel to select it (Shift-click for more), drag it to move, drag a handle to resize. Click empty space to clear.",
+  draw: "Drag on the page to draw a new panel.",
+  split: "Drag a line across a panel to cut it in two: mostly across = a horizontal cut, mostly down = a vertical cut.",
+  order: "Click the panels in reading order. Click empty space to start over.",
+  trace: "For a panel that is not a rectangle: click around its edge, one click at each corner. Click the first point (or press Enter, or double-click) to finish; Esc cancels.",
+};
+let S, cur = 0, tool = "select", filter = "all", sel = new Set(), order = [], saveTimer = null, trace = [];
+let book = [], orig = [], undo = [];
+const $ = id => document.getElementById(id);
+const clone = o => JSON.parse(JSON.stringify(o));
+
+async function load() {
+  S = await (await fetch("/api/state")).json();
+  $("input").textContent = S.input;
+  book = S.pages.map(p => p.panels.map((q, i) => ({ x: q.x, y: q.y, w: q.w, h: q.h, orig: i, doubtful: q.doubtful, outline: null })));
+  orig = clone(book);
+  undo = book.map(() => []);
+  renderList();
+  show(0);
+}
+
+const key = ps => JSON.stringify(ps.map(({ x, y, w, h, outline }) => [x, y, w, h, outline]));
+const edited = i => key(book[i]) !== key(orig[i]);
+// A panel's outline as an SVG path: its traced outline, or its box.
+const pathOf = b => b.outline ? "M" + b.outline.map(([x, y]) => `${x} ${y}`).join("L") + "Z" : `M${b.x} ${b.y}h${b.w}v${b.h}h${-b.w}Z`;
+const doubtful = i => orig[i].some(p => p.doubtful);
+const visible = () => S.pages.map((_, i) => i).filter(i => filter === "all" || (filter === "doubt" && doubtful(i)) || (filter === "edited" && edited(i)));
+
+// Pages that differ from the detection, kept up to date per page so a change doesn't compare them all.
+const editedPages = new Set();
+const flagOf = i => editedPages.has(i) ? ["flag edited", "✎"] : doubtful(i) ? ["flag doubt", "?"] : ["flag", ""];
+const boxesOf = i => book[i].map(b => `<path fill-rule="evenodd" d="${pathOf(b)}"/>`).join("");
+
+function renderList() {
+  $("list").innerHTML = visible().map(i => {
+    const p = S.pages[i], [cls, mark] = flagOf(i);
+    return `<div class="thumb ${i === cur ? "sel" : ""}" data-i="${i}"><img loading="lazy" src="/image/${i + 1}" alt="Page ${i + 1}">
+      <svg viewBox="0 0 ${p.width} ${p.height}" preserveAspectRatio="none">${boxesOf(i)}</svg><span class="num">${i + 1}</span><span class="${cls}">${mark}</span></div>`;
+  }).join("") || `<p class="hint">No pages.</p>`;
+  $("ndoubt").textContent = S.pages.filter((_, i) => doubtful(i)).length;
+  $("nedited").textContent = editedPages.size;
+}
+
+// After a change to page i: redraw only its thumbnail. (Under the Edited filter a page made
+// unedited again stays listed until the filter is picked again.)
+function updateThumb(i) {
+  if (edited(i)) editedPages.add(i); else editedPages.delete(i);
+  $("nedited").textContent = editedPages.size;
+  const t = $("list").querySelector(`.thumb[data-i="${i}"]`);
+  if (!t) return;
+  t.querySelector("svg").innerHTML = boxesOf(i);
+  const [cls, mark] = flagOf(i), f = t.querySelector(".flag");
+  f.className = cls; f.textContent = mark;
+}
+
+function show(i) {
+  cur = Math.max(0, Math.min(S.pages.length - 1, i));
+  sel.clear(); order = [];
+  const p = S.pages[cur];
+  $("title").textContent = `Page ${cur + 1} of ${S.pages.length}`;
+  $("img").src = `/image/${cur + 1}`;
+  $("svg").setAttribute("viewBox", `0 0 ${p.width} ${p.height}`);
+  draw();
+  for (const t of $("list").children) t.classList.toggle("sel", +t.dataset.i === cur);
+  $("list").querySelector(".sel")?.scrollIntoView({ block: "nearest" });
+}
+
+// Page pixels per screen pixel, for handle sizes.
+const unit = () => S.pages[cur].width / $("stage").getBoundingClientRect().width;
+
+function draw(extra = "") {
+  const p = S.pages[cur], u = unit(), font = Math.max(p.width, p.height) / 28;
+  const panels = book[cur].map((b, k) => {
+    const cls = ["panel", b.doubtful && b.orig !== null ? "doubt" : "", sel.has(k) ? "sel" : "", order.includes(k) ? "ordered" : ""].join(" ");
+    const n = tool === "order" && order.includes(k) ? order.indexOf(k) + 1 : k + 1;
+    return `<g class="${cls}" data-k="${k}"><path class="box" fill-rule="evenodd" d="${pathOf(b)}"/>
+      <text x="${b.x + font * .35}" y="${b.y + font * 1.05}" font-size="${font}" stroke-width="${font / 6}">${n}</text></g>`;
+  }).join("");
+  let handles = "";
+  if (tool === "select" && sel.size === 1) {
+    const b = book[cur][[...sel][0]], s = 9 * u;
+    for (const [hx, hy] of [[0, 0], [.5, 0], [1, 0], [0, .5], [1, .5], [0, 1], [.5, 1], [1, 1]]) {
+      handles += `<rect class="handle" data-hx="${hx}" data-hy="${hy}" x="${b.x + b.w * hx - s / 2}" y="${b.y + b.h * hy - s / 2}" width="${s}" height="${s}"/>`;
+    }
+  }
+  $("svg").innerHTML = panels + handles + extra;
+  $("panels").innerHTML = book[cur].map((b, k) =>
+    `<div class="${sel.has(k) ? "sel" : ""}" data-k="${k}"><b>${k + 1}</b><span>${Math.round(b.w)}×${Math.round(b.h)} at ${Math.round(b.x)},${Math.round(b.y)}${b.outline ? " · traced" : ""}</span>${b.orig !== null && b.doubtful ? `<span class="doubt">doubtful</span>` : ""}</div>`).join("")
+    || `<span class="hint">No panels: the page is skipped.</span>`;
+  $("delete").disabled = sel.size === 0;
+  $("merge").disabled = sel.size < 2;
+  $("unshape").disabled = ![...sel].some(k => book[cur][k]?.outline);
+  $("undo").disabled = undo[cur].length === 0;
+  $("hint").textContent = tool === "order" && order.length ? `${order.length} of ${book[cur].length} placed. ` + HINTS.order : HINTS[tool];
+}
+
+function change(fn) {
+  undo[cur].push(clone(book[cur]));
+  fn(book[cur]);
+  draw();
+  updateThumb(cur);
+  $("status").textContent = "Saving…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => save("/api/save"), 500);
+}
+
+async function save(url) {
+  const body = JSON.stringify(book.map(ps => ({ panels: ps.map(({ x, y, w, h, orig, outline }) => ({ x, y, w, h, orig, outline: outline || [] })) })));
+  const res = await fetch(url, { method: "POST", body });
+  $("status").textContent = res.ok ? "Saved" : "Save failed";
+  return res.ok;
+}
+
+const toPage = e => {
+  const r = $("stage").getBoundingClientRect(), p = S.pages[cur];
+  return { x: Math.max(0, Math.min(p.width, (e.clientX - r.left) * p.width / r.width)), y: Math.max(0, Math.min(p.height, (e.clientY - r.top) * p.height / r.height)) };
+};
+const hit = pt => {
+  // Smallest panel under the point.
+  let best = -1;
+  book[cur].forEach((b, k) => {
+    if (pt.x >= b.x && pt.x <= b.x + b.w && pt.y >= b.y && pt.y <= b.y + b.h && (best < 0 || b.w * b.h < book[cur][best].w * book[cur][best].h)) best = k;
+  });
+  return best;
+};
+const fresh = b => ({ ...b, orig: null, doubtful: false, outline: b.outline ? b.outline.map(p => [...p]) : null });
+
+let drag = null;
+$("stage").addEventListener("pointerdown", e => {
+  const pt = toPage(e);
+  $("stage").setPointerCapture(e.pointerId);
+  e.preventDefault();
+  if (tool === "select") {
+    const h = e.target.closest("rect.handle");
+    if (h) { drag = { kind: "resize", k: [...sel][0], hx: +h.dataset.hx, hy: +h.dataset.hy, start: pt, from: clone(book[cur][[...sel][0]]) }; return; }
+    const k = hit(pt);
+    if (k < 0) { sel.clear(); draw(); return; }
+    if (e.shiftKey) { sel.has(k) ? sel.delete(k) : sel.add(k); draw(); return; }
+    if (!sel.has(k)) { sel.clear(); sel.add(k); }
+    drag = { kind: "move", start: pt, from: [...sel].map(i => [i, clone(book[cur][i])]) };
+    draw();
+  } else if (tool === "trace") {
+    const p = S.pages[cur], near = Math.max(p.width, p.height) / 80;
+    if (trace.length >= 3 && Math.hypot(pt.x - trace[0][0], pt.y - trace[0][1]) <= near) finishTrace();
+    else { trace.push([pt.x, pt.y]); drawTrace(); }
+  } else if (tool === "draw" || tool === "split") {
+    drag = { kind: tool, start: pt, at: pt };
+  } else if (tool === "order") {
+    const k = hit(pt);
+    if (k < 0) { order = []; draw(); return; }
+    if (!order.includes(k)) order.push(k);
+    if (order.length === book[cur].length) {
+      const o = order.slice();
+      order = [];
+      change(ps => { const re = o.map(i => ps[i]); ps.splice(0, ps.length, ...re); });
+    } else draw();
+  }
+});
+$("stage").addEventListener("pointermove", e => {
+  if (tool === "trace" && trace.length) { drawTrace([toPage(e).x, toPage(e).y]); return; }
+  if (!drag) return;
+  const pt = toPage(e), dx = pt.x - drag.start.x, dy = pt.y - drag.start.y;
+  if (drag.kind === "move") {
+    // (A traced outline moves with its panel.)
+    for (const [i, b] of drag.from) Object.assign(book[cur][i], { x: b.x + dx, y: b.y + dy, outline: b.outline && b.outline.map(([x, y]) => [x + dx, y + dy]) });
+    drag.moved = true; draw();
+  } else if (drag.kind === "resize") {
+    const f = drag.from, b = book[cur][drag.k];
+    let [x0, y0, x1, y1] = [f.x, f.y, f.x + f.w, f.y + f.h];
+    if (drag.hx === 0) x0 += dx; if (drag.hx === 1) x1 += dx;
+    if (drag.hy === 0) y0 += dy; if (drag.hy === 1) y1 += dy;
+    const nb = { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+    // (A traced outline stretches with its box.)
+    const outline = f.outline && f.outline.map(([x, y]) => [nb.x + (x - f.x) * nb.w / Math.max(1, f.w), nb.y + (y - f.y) * nb.h / Math.max(1, f.h)]);
+    Object.assign(b, nb, { outline });
+    drag.moved = true; draw();
+  } else if (drag.kind === "draw") {
+    drag.at = pt;
+    const [x, y] = [Math.min(pt.x, drag.start.x), Math.min(pt.y, drag.start.y)];
+    draw(`<rect class="ghost" x="${x}" y="${y}" width="${Math.abs(dx)}" height="${Math.abs(dy)}"/>`);
+  } else if (drag.kind === "split") {
+    drag.at = pt;
+    draw(`<line class="cut" x1="${drag.start.x}" y1="${drag.start.y}" x2="${pt.x}" y2="${pt.y}"/>`);
+  }
+});
+$("stage").addEventListener("pointerup", e => {
+  if (!drag) return;
+  const d = drag, pt = toPage(e), p = S.pages[cur];
+  drag = null;
+  if ((d.kind === "move" || d.kind === "resize") && d.moved) {
+    // Put the pre-drag boxes on the undo stack, then mark the moved panels as edited.
+    const after = clone(book[cur]);
+    if (d.kind === "move") for (const [i, b] of d.from) Object.assign(book[cur][i], b);
+    else Object.assign(book[cur][d.k], d.from);
+    change(ps => { after.forEach((b, i) => { ps[i] = (b.x !== ps[i].x || b.y !== ps[i].y || b.w !== ps[i].w || b.h !== ps[i].h) ? fresh(b) : b; }); });
+
+  } else if (d.kind === "draw") {
+    const b = { x: Math.min(pt.x, d.start.x), y: Math.min(pt.y, d.start.y), w: Math.abs(pt.x - d.start.x), h: Math.abs(pt.y - d.start.y) };
+    if (b.w > p.width / 40 && b.h > p.height / 40) change(ps => ps.push(fresh(b)));
+    else draw();
+  } else if (d.kind === "split") {
+    const mid = { x: (d.start.x + pt.x) / 2, y: (d.start.y + pt.y) / 2 };
+    const k = hit(mid);
+    if (k < 0) { draw(); return; }
+    const b = book[cur][k];
+    const across = Math.abs(pt.x - d.start.x) >= Math.abs(pt.y - d.start.y);
+    const clickOnly = Math.hypot(pt.x - d.start.x, pt.y - d.start.y) < p.width / 60;
+    const horizontal = clickOnly ? b.h >= b.w : across;
+    let parts;
+    if (horizontal && mid.y > b.y + 4 && mid.y < b.y + b.h - 4) parts = [{ ...b, h: mid.y - b.y }, { ...b, y: mid.y, h: b.y + b.h - mid.y }];
+    else if (!horizontal && mid.x > b.x + 4 && mid.x < b.x + b.w - 4) {
+      parts = [{ ...b, w: mid.x - b.x }, { ...b, x: mid.x, w: b.x + b.w - mid.x }];
+      if (S.rtl) parts.reverse();
+    }
+    if (parts) {
+      // A traced outline is clipped to each piece.
+      for (const q of parts) if (q.outline) { q.outline = clip(q.outline, q); if (q.outline.length < 3) q.outline = null; }
+      change(ps => ps.splice(k, 1, ...parts.map(fresh)));
+    }
+    else draw();
+  } else draw();
+});
+
+$("panels").addEventListener("click", e => {
+  const r = e.target.closest("[data-k]");
+  if (!r) return;
+  const k = +r.dataset.k;
+  if (e.shiftKey) sel.has(k) ? sel.delete(k) : sel.add(k); else { sel.clear(); sel.add(k); }
+  setTool("select");
+});
+function del() {
+  if (!sel.size) return;
+  const s = new Set(sel); sel.clear();
+  change(ps => { const keep = ps.filter((_, i) => !s.has(i)); ps.splice(0, ps.length, ...keep); });
+}
+function merge() {
+  if (sel.size < 2) return;
+  const ks = [...sel].sort((a, b) => a - b); sel.clear();
+  change(ps => {
+    const bs = ks.map(i => ps[i]);
+    const x0 = Math.min(...bs.map(b => b.x)), y0 = Math.min(...bs.map(b => b.y));
+    const x1 = Math.max(...bs.map(b => b.x + b.w)), y1 = Math.max(...bs.map(b => b.y + b.h));
+    const u = fresh({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+    for (const i of ks.slice(1).reverse()) ps.splice(i, 1);
+    ps[ks[0]] = u;
+  });
+}
+function drawTrace(at) {
+  if (!trace.length) { draw(); return; }
+  const pts = [...trace, ...(at ? [at] : [])].map(([x, y]) => `${x},${y}`).join(" ");
+  const u = unit();
+  const dots = trace.map(([x, y], i) => `<circle class="dot ${i === 0 ? "first" : ""}" cx="${x}" cy="${y}" r="${(i === 0 ? 7 : 5) * u}"/>`).join("");
+  draw(`<polyline class="trace" points="${pts}"/>${dots}`);
+  $("hint").textContent = `${trace.length} point(s). ` + HINTS.trace;
+}
+$("stage").addEventListener("dblclick", () => {
+  if (tool !== "trace") return;
+  // (The double click's own clicks added the last point twice.)
+  if (trace.length >= 2) trace.pop();
+  finishTrace();
+});
+function finishTrace() {
+  const pts = trace; trace = [];
+  if (pts.length < 3) { draw(); return; }
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const b = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+  const p = S.pages[cur];
+  if (b.w < p.width / 40 || b.h < p.height / 40) { draw(); return; }
+  change(ps => ps.push(fresh({ ...b, outline: pts })));
+}
+// An outline clipped to a box (Sutherland-Hodgman, one box side at a time).
+function clip(poly, r) {
+  const sides = [[p => p[0] >= r.x, (a, b) => cutAt(a, b, 0, r.x)], [p => p[0] <= r.x + r.w, (a, b) => cutAt(a, b, 0, r.x + r.w)],
+                 [p => p[1] >= r.y, (a, b) => cutAt(a, b, 1, r.y)], [p => p[1] <= r.y + r.h, (a, b) => cutAt(a, b, 1, r.y + r.h)]];
+  let out = poly;
+  for (const [inside, cross] of sides) {
+    const src = out; out = [];
+    src.forEach((p, i) => {
+      const q = src[(i + 1) % src.length];
+      if (inside(p)) { out.push(p); if (!inside(q)) out.push(cross(p, q)); }
+      else if (inside(q)) out.push(cross(p, q));
+    });
+  }
+  return out;
+}
+function cutAt(a, b, axis, v) {
+  const t = (v - a[axis]) / (b[axis] - a[axis]);
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+function unshape() {
+  const ks = [...sel].filter(k => book[cur][k].outline);
+  if (!ks.length) return;
+  change(ps => { for (const k of ks) ps[k] = fresh({ ...ps[k], outline: null }); });
+}
+function whole() {
+  const p = S.pages[cur]; sel.clear();
+  change(ps => ps.splice(0, ps.length, fresh({ x: 0, y: 0, w: p.width, h: p.height })));
+}
+function reset() { sel.clear(); change(ps => ps.splice(0, ps.length, ...clone(orig[cur]))); }
+function doUndo() {
+  if (!undo[cur].length) return;
+  book[cur] = undo[cur].pop(); sel.clear(); draw(); updateThumb(cur);
+  clearTimeout(saveTimer); saveTimer = setTimeout(() => save("/api/save"), 500);
+}
+function setTool(t) {
+  tool = t; order = [];
+  if (t !== "select") sel.clear();
+  trace = [];
+  for (const b of document.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === t);
+  $("stage").className = "tool-" + t;
+  draw();
+}
+const step = dlt => {
+  const v = visible(), at = v.indexOf(cur);
+  const n = v[at < 0 ? 0 : at + dlt];
+  if (n !== undefined) show(n);
+};
+
+$("unshape").onclick = unshape;
+$("delete").onclick = del; $("merge").onclick = merge; $("whole").onclick = whole; $("reset").onclick = reset; $("undo").onclick = doUndo;
+$("prev").onclick = () => step(-1); $("next").onclick = () => step(1);
+for (const b of document.querySelectorAll("[data-tool]")) b.onclick = () => setTool(b.dataset.tool);
+for (const b of document.querySelectorAll("[data-filter]")) b.onclick = () => {
+  filter = b.dataset.filter;
+  for (const o of document.querySelectorAll("[data-filter]")) o.classList.toggle("on", o === b);
+  renderList();
+};
+$("list").addEventListener("click", e => { const t = e.target.closest(".thumb"); if (t) show(+t.dataset.i); });
+window.addEventListener("resize", () => S && draw());
+document.addEventListener("keydown", e => {
+  if (!S || e.target.matches("input, textarea")) return;
+  const k = e.key.toLowerCase();
+  if ((e.metaKey || e.ctrlKey) && k === "z") { e.preventDefault(); doUndo(); return; }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "ArrowRight") step(1);
+  else if (e.key === "ArrowLeft") step(-1);
+  else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); del(); }
+  else if (e.key === "Escape") { sel.clear(); order = []; trace = []; draw(); }
+  else if (k === "v") setTool("select"); else if (k === "d") setTool("draw");
+  else if (k === "s") setTool("split"); else if (k === "o") setTool("order");
+  else if (k === "t") setTool("trace");
+  else if (e.key === "Enter" && tool === "trace") finishTrace();
+  else if (k === "m") merge(); else if (k === "w") whole(); else if (k === "r") reset(); else if (k === "z") doUndo();
+});
+$("cut").onclick = async () => {
+  clearTimeout(saveTimer);
+  $("cut").disabled = true;
+  if (await save("/api/cut")) {
+    $("done").style.display = "flex";
+    // (A front end showing this page closes its window on this title.)
+    document.title = "Panel Editor: done";
+  }
+  else $("cut").disabled = false;
+};
+$("img").addEventListener("load", () => draw());
+load();
+</script>
+</body>
+</html>
